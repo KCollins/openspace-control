@@ -5,16 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenSpace Hand Tracking Controller</title>
   
-  <!-- OpenSpace API Driver CDN -->
-  <script src="https://unpkg.com/openspace-api-js@latest/dist/openspace-api.js" 
-          onerror="console.warn('CDN offline. Falling back to native WebSocket driver.');"></script>
+  <!-- Local OpenSpace API Driver -->
+  <script src="./vendor/openspace-api.js"></script>
   
-  <!-- Three.js & MediaPipe Tasks Vision -->
+  <!-- Local Three.js & MediaPipe Tasks Vision Import Map -->
   <script type="importmap">
     {
       "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-        "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/+esm"
+        "three": "./vendor/three.module.js",
+        "@mediapipe/tasks-vision": "./vendor/tasks-vision/tasks-vision.js"
       }
     }
   </script>
@@ -366,14 +365,12 @@
       }
     }
 
-    // --- MediaPipe Hand Tracking Engine ---
+    // --- MediaPipe Hand Tracking Engine (Local Offline Loader) ---
     async function initHandTracking() {
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
-      );
+      const vision = await FilesetResolver.forVisionTasks("./vendor/tasks-vision");
       handLandmarker = await HandLandmarker.createFromOptions(vision, {
         baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          modelAssetPath: "./models/hand_landmarker.task",
           delegate: "GPU"
         },
         runningMode: "VIDEO",
