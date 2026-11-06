@@ -94,18 +94,17 @@
     }
     input:focus, select:focus { outline: none; border-color: #58a6ff; }
 
-    /* Multi-Parameter Monitor Grid */
+    /* Permanent Multi-Parameter Grid Monitor */
     #paramMonitor {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
       gap: 10px;
-      max-height: 200px;
+      max-height: 220px;
       overflow-y: auto;
       background: #0d1117;
       padding: 12px;
       border: 1px solid #30363d;
       border-radius: 6px;
-      min-height: 100px;
     }
     .param-badge {
       background: #161b22;
@@ -115,18 +114,45 @@
       display: flex;
       flex-direction: column;
       gap: 4px;
+      transition: all 0.2s ease;
     }
     .param-badge .key {
-      color: #58a6ff;
-      font-weight: 600;
       font-size: 0.72rem;
       text-transform: uppercase;
       font-family: monospace;
     }
     .param-badge .val {
-      color: #c9d1d9;
       font-size: 0.95rem;
       font-family: monospace;
+    }
+
+    /* Active State (Tracked Parameter) */
+    .param-badge.active {
+      background: #1c2129;
+      border-color: #388bfd;
+      box-shadow: 0 0 6px rgba(56, 139, 253, 0.2);
+    }
+    .param-badge.active .key {
+      color: #58a6ff;
+      font-weight: 600;
+    }
+    .param-badge.active .val {
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    /* Inactive State (Light Gray / Dimmed) */
+    .param-badge.inactive {
+      background: #161b22;
+      border-color: #21262d;
+      opacity: 0.55;
+    }
+    .param-badge.inactive .key {
+      color: #8b949e;
+      font-weight: 400;
+    }
+    .param-badge.inactive .val {
+      color: #6e7681;
     }
 
     .mapping-row {
@@ -187,9 +213,9 @@
     </div>
   </div>
 
-  <!-- Camera & Multi-Parameter Monitor -->
+  <!-- Camera & Multi-Parameter Grid Monitor -->
   <div class="card">
-    <h2>Webcam & Parameter Tracking Monitor</h2>
+    <h2>Webcam & Gesture Signal Monitor</h2>
     <div class="detect-grid">
       <div class="cam-preview-container">
         <video id="webcam" autoplay playsinline muted></video>
@@ -199,10 +225,8 @@
         <button id="detectBtn" class="btn btn-primary" style="width: max-content;">Enable Tracking Camera</button>
 
         <div class="field">
-          <label>Active Hand Parameters (Live Output)</label>
-          <div id="paramMonitor">
-            <div style="color: #8b949e; font-size: 0.85rem; grid-column: 1 / -1;">No hand gestures detected</div>
-          </div>
+          <label>Tracked Hand Parameters (Live Output)</label>
+          <div id="paramMonitor"></div>
         </div>
       </div>
     </div>
@@ -416,24 +440,25 @@
       updateParamMonitor();
     }
 
+    // --- Multi-Parameter Fixed Grid Renderer ---
     function updateParamMonitor() {
       const monitorEl = document.getElementById('paramMonitor');
-      const keys = Object.keys(currentParamValues);
-
-      if (keys.length === 0) {
-        monitorEl.innerHTML = '<div style="color: #8b949e; font-size: 0.85rem; grid-column: 1 / -1;">No hand gestures detected</div>';
-        return;
-      }
-
       let html = '';
-      keys.forEach(key => {
+
+      PARAM_OPTIONS.forEach(opt => {
+        const val = currentParamValues[opt.key];
+        const isActive = (val !== undefined);
+        const displayVal = isActive ? val.toFixed(2) : '--';
+        const badgeClass = isActive ? 'param-badge active' : 'param-badge inactive';
+
         html += `
-          <div class="param-badge">
-            <span class="key">${key}</span>
-            <span class="val">${currentParamValues[key].toFixed(2)}</span>
+          <div class="${badgeClass}">
+            <span class="key">${opt.key}</span>
+            <span class="val">${displayVal}</span>
           </div>
         `;
       });
+
       monitorEl.innerHTML = html;
     }
 
@@ -486,11 +511,12 @@
       row.id = `row_${id}`;
 
       const defaultLua = 'openspace.setPropertyValueSingle("Scene.Earth.Renderable.Layers.ColorLayers.ESRI_VIIRS_Combo.Opacity",{VALUE});';
+      const selectedParam = data ? data.param : 'primary_palm_x';
 
       row.innerHTML = `
         <select id="param_${id}" onchange="window.updateMapping(${id})">
           <option value="">Select Parameter...</option>
-          ${PARAM_OPTIONS.map(o => `<option value="${o.key}">${o.label}</option>`).join('')}
+          ${PARAM_OPTIONS.map(o => `<option value="${o.key}" ${o.key === selectedParam ? 'selected' : ''}>${o.label}</option>`).join('')}
         </select>
         <input type="text" id="lua_${id}" placeholder="openspace.setPropertyValueSingle('Prop', {VALUE})" value="${data ? data.luaTemplate : defaultLua}" onchange="window.updateMapping(${id})">
         <input type="number" id="min_${id}" step="0.1" value="${data ? data.min : '0.0'}" onchange="window.updateMapping(${id})">
@@ -499,7 +525,6 @@
       `;
 
       container.appendChild(row);
-      if (data && data.param) document.getElementById(`param_${id}`).value = data.param;
       window.updateMapping(id);
     };
 
@@ -567,6 +592,7 @@
     });
 
     window.addEventListener('DOMContentLoaded', () => {
+      updateParamMonitor();
       window.addMappingRow();
       window.initConnection();
     });
