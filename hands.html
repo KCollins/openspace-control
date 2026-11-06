@@ -63,7 +63,7 @@
     .card h2 { font-size: 1.1rem; margin-bottom: 15px; color: #8b949e; }
 
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-    .detect-grid { display: grid; grid-template-columns: 240px 1fr; gap: 20px; align-items: center; }
+    .detect-grid { display: grid; grid-template-columns: 240px 1fr; gap: 20px; align-items: start; }
 
     .cam-preview-container {
       width: 240px;
@@ -93,6 +93,41 @@
       font-family: monospace;
     }
     input:focus, select:focus { outline: none; border-color: #58a6ff; }
+
+    /* Multi-Parameter Monitor Grid */
+    #paramMonitor {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 10px;
+      max-height: 200px;
+      overflow-y: auto;
+      background: #0d1117;
+      padding: 12px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      min-height: 100px;
+    }
+    .param-badge {
+      background: #161b22;
+      border: 1px solid #21262d;
+      padding: 8px 10px;
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .param-badge .key {
+      color: #58a6ff;
+      font-weight: 600;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      font-family: monospace;
+    }
+    .param-badge .val {
+      color: #c9d1d9;
+      font-size: 0.95rem;
+      font-family: monospace;
+    }
 
     .mapping-row {
       display: grid;
@@ -152,25 +187,21 @@
     </div>
   </div>
 
-  <!-- Camera & Tracking Monitor -->
+  <!-- Camera & Multi-Parameter Monitor -->
   <div class="card">
-    <h2>Webcam & Parameter Tracking</h2>
+    <h2>Webcam & Parameter Tracking Monitor</h2>
     <div class="detect-grid">
       <div class="cam-preview-container">
         <video id="webcam" autoplay playsinline muted></video>
       </div>
 
-      <div style="display: flex; flex-direction: column; gap: 15px;">
+      <div style="display: flex; flex-direction: column; gap: 12px; width: 100%;">
         <button id="detectBtn" class="btn btn-primary" style="width: max-content;">Enable Tracking Camera</button>
 
-        <div class="grid-2">
-          <div class="field">
-            <label>Active Hand Parameter</label>
-            <input type="text" id="activeParamDisplay" readonly placeholder="No gesture detected">
-          </div>
-          <div class="field">
-            <label>Normalized Value (0.00 - 1.00)</label>
-            <input type="text" id="activeValueDisplay" readonly placeholder="0.00">
+        <div class="field">
+          <label>Active Hand Parameters (Live Output)</label>
+          <div id="paramMonitor">
+            <div style="color: #8b949e; font-size: 0.85rem; grid-column: 1 / -1;">No hand gestures detected</div>
           </div>
         </div>
       </div>
@@ -333,7 +364,13 @@
       const lms = results.landmarks || [];
       const worlds = results.worldLandmarks || [];
 
-      if (lms.length === 0) return;
+      // Wipe previous frame parameter buffer
+      for (const k in currentParamValues) delete currentParamValues[k];
+
+      if (lms.length === 0) {
+        updateParamMonitor();
+        return;
+      }
 
       // 1. Primary Hand Parameters
       const lm = lms[0];
@@ -376,11 +413,28 @@
         currentParamValues['twofist_explode'] = THREE.MathUtils.clamp(bothFists * (dist / 0.6), 0, 1);
       }
 
-      const activeKey = Object.keys(currentParamValues)[0];
-      if (activeKey) {
-        document.getElementById('activeParamDisplay').value = activeKey;
-        document.getElementById('activeValueDisplay').value = currentParamValues[activeKey].toFixed(2);
+      updateParamMonitor();
+    }
+
+    function updateParamMonitor() {
+      const monitorEl = document.getElementById('paramMonitor');
+      const keys = Object.keys(currentParamValues);
+
+      if (keys.length === 0) {
+        monitorEl.innerHTML = '<div style="color: #8b949e; font-size: 0.85rem; grid-column: 1 / -1;">No hand gestures detected</div>';
+        return;
       }
+
+      let html = '';
+      keys.forEach(key => {
+        html += `
+          <div class="param-badge">
+            <span class="key">${key}</span>
+            <span class="val">${currentParamValues[key].toFixed(2)}</span>
+          </div>
+        `;
+      });
+      monitorEl.innerHTML = html;
     }
 
     function computePalmQuat(world) {
@@ -431,7 +485,7 @@
       row.className = 'mapping-row';
       row.id = `row_${id}`;
 
-      const defaultLua = "openspace.setPropertyValueSingle('NavigationHandler.OrbitalNavigator.Friction.Rotation', {VALUE});";
+      const defaultLua = 'openspace.setPropertyValueSingle("Scene.Earth.Renderable.Layers.ColorLayers.ESRI_VIIRS_Combo.Opacity",{VALUE});';
 
       row.innerHTML = `
         <select id="param_${id}" onchange="window.updateMapping(${id})">
