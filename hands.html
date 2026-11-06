@@ -533,7 +533,7 @@
       row.className = 'mapping-row';
       row.id = `row_${id}`;
 
-      const defaultLua = 'openspace.setPropertyValueSingle("Scene.Earth.Renderable.Layers.ColorLayers.ESRI_VIIRS_Combo.Opacity",{VALUE});';
+      const defaultLua = "openspace.setPropertyValueSingle('Scene.Earth.Renderable.Layers.ColorLayers.ESRI_VIIRS_Combo.Opacity', {VALUE});";
       const selectedParam = data ? data.param : 'primary_palm_x';
 
       row.innerHTML = `
