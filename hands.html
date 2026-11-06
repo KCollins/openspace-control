@@ -94,7 +94,7 @@
     }
     input:focus, select:focus { outline: none; border-color: #58a6ff; }
 
-    /* Permanent Multi-Parameter Grid Monitor */
+    /* Permanent Multi-Parameter Grid Monitor with Dynamic Visual Fill Bars */
     #paramMonitor {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
@@ -107,29 +107,37 @@
       border-radius: 6px;
     }
     .param-badge {
-      background: #161b22;
-      border: 1px solid #21262d;
-      padding: 8px 10px;
       border-radius: 6px;
+      padding: 8px 10px;
       display: flex;
       flex-direction: column;
       gap: 4px;
-      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s, opacity 0.2s;
     }
     .param-badge .key {
       font-size: 0.72rem;
       text-transform: uppercase;
       font-family: monospace;
+      z-index: 1;
     }
     .param-badge .val {
       font-size: 0.95rem;
       font-family: monospace;
+      z-index: 1;
     }
 
-    /* Active State (Tracked Parameter) */
+    /* Active Tracked State (Blue Fill Bar) */
     .param-badge.active {
-      background: #1c2129;
-      border-color: #388bfd;
+      background: linear-gradient(
+        to right,
+        rgba(31, 111, 235, 0.45) 0%,
+        rgba(31, 111, 235, 0.45) var(--fill-pct, 0%),
+        #161b22 var(--fill-pct, 0%),
+        #161b22 100%
+      );
+      border: 1px solid #388bfd;
       box-shadow: 0 0 6px rgba(56, 139, 253, 0.2);
     }
     .param-badge.active .key {
@@ -141,18 +149,24 @@
       font-weight: 600;
     }
 
-    /* Inactive State (Light Gray / Dimmed) */
+    /* Inactive State (Gray Fill Bar preserved at last state) */
     .param-badge.inactive {
-      background: #161b22;
-      border-color: #21262d;
-      opacity: 0.55;
+      background: linear-gradient(
+        to right,
+        rgba(110, 118, 129, 0.25) 0%,
+        rgba(110, 118, 129, 0.25) var(--fill-pct, 0%),
+        #161b22 var(--fill-pct, 0%),
+        #161b22 100%
+      );
+      border: 1px solid #21262d;
+      opacity: 0.6;
     }
     .param-badge.inactive .key {
       color: #8b949e;
       font-weight: 400;
     }
     .param-badge.inactive .val {
-      color: #6e7681;
+      color: #8b949e;
     }
 
     .mapping-row {
@@ -213,7 +227,7 @@
     </div>
   </div>
 
-  <!-- Camera & Multi-Parameter Grid Monitor -->
+  <!-- Camera & Dynamic Bar Parameter Monitor -->
   <div class="card">
     <h2>Webcam & Gesture Signal Monitor</h2>
     <div class="detect-grid">
@@ -225,7 +239,7 @@
         <button id="detectBtn" class="btn btn-primary" style="width: max-content;">Enable Tracking Camera</button>
 
         <div class="field">
-          <label>Tracked Hand Parameters (Live Output)</label>
+          <label>Tracked Hand Parameters (Live Fill Bars)</label>
           <div id="paramMonitor"></div>
         </div>
       </div>
@@ -259,6 +273,7 @@
     let rowCounter = 0;
     const activeMappings = {};
     const currentParamValues = {};
+    const lastKnownParamValues = {};
 
     const PARAM_OPTIONS = [
       { key: 'primary_palm_x', label: 'Primary Hand X (Screen)' },
@@ -388,7 +403,7 @@
       const lms = results.landmarks || [];
       const worlds = results.worldLandmarks || [];
 
-      // Wipe previous frame parameter buffer
+      // Wipe current frame parameter buffer
       for (const k in currentParamValues) delete currentParamValues[k];
 
       if (lms.length === 0) {
@@ -437,22 +452,30 @@
         currentParamValues['twofist_explode'] = THREE.MathUtils.clamp(bothFists * (dist / 0.6), 0, 1);
       }
 
+      // Record active values into historical memory buffer
+      Object.keys(currentParamValues).forEach(k => {
+        lastKnownParamValues[k] = currentParamValues[k];
+      });
+
       updateParamMonitor();
     }
 
-    // --- Multi-Parameter Fixed Grid Renderer ---
+    // --- Multi-Parameter Grid Renderer with Dynamic Progress Fill Bars ---
     function updateParamMonitor() {
       const monitorEl = document.getElementById('paramMonitor');
       let html = '';
 
       PARAM_OPTIONS.forEach(opt => {
-        const val = currentParamValues[opt.key];
-        const isActive = (val !== undefined);
-        const displayVal = isActive ? val.toFixed(2) : '--';
+        const isActive = (currentParamValues[opt.key] !== undefined);
+        const hasHistory = (lastKnownParamValues[opt.key] !== undefined);
+        const val = isActive ? currentParamValues[opt.key] : (hasHistory ? lastKnownParamValues[opt.key] : 0);
+        
+        const pct = (val * 100).toFixed(1);
         const badgeClass = isActive ? 'param-badge active' : 'param-badge inactive';
+        const displayVal = hasHistory || isActive ? val.toFixed(2) : '--';
 
         html += `
-          <div class="${badgeClass}">
+          <div class="${badgeClass}" style="--fill-pct: ${pct}%;">
             <span class="key">${opt.key}</span>
             <span class="val">${displayVal}</span>
           </div>
