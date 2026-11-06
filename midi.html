@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenSpace MIDI Controller Mapper</title>
+  
+  <!-- OpenSpace API Driver CDN -->
+  <script src="https://unpkg.com/openspace-api-js@latest/dist/openspace-api.js" 
+          onerror="console.warn('CDN offline. Falling back to native WebSocket driver.');"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #0b0e14;
+      color: #e0e6ed;
+      padding: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #30363d;
+      margin-bottom: 20px;
+    }
+    h1 { font-size: 1.5rem; color: #58a6ff; }
+    
+    .status-badge {
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      background: #3d1a1a;
+      color: #ff7b72;
+      border: 1px solid #8e1515;
+    }
+    .status-badge.connected {
+      background: #123d1c;
+      color: #56d364;
+      border-color: #2ea043;
+    }
+
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card h2 { font-size: 1.1rem; margin-bottom: 15px; color: #8b949e; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 0.8rem; color: #8b949e; font-weight: 600; text-transform: uppercase; }
+    input, select {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      font-family: monospace;
+    }
+    input:focus, select:focus { outline: none; border-color: #58a6ff; }
+
+    .mapping-row {
+      display: grid;
+      grid-template-columns: 100px 80px 1fr 90px 90px 40px;
+      gap: 10px;
+      align-items: center;
+      background: #0d1117;
+      border: 1px solid #21262d;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+    }
+
+    .btn {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    .btn:hover { background: #30363d; }
+    .btn-primary { background: #1f6feb; color: #ffffff; border-color: #388bfd; }
+    .btn-primary:hover { background: #388bfd; }
+    .btn-danger { background: #da3633; color: #ffffff; border-color: #f85149; height: 35px; }
+    .btn-group { display: flex; gap: 10px; margin-top: 15px; }
+
+    #fileInput { display: none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>OpenSpace MIDI Controller</h1>
+    <div id="connection-badge" class="status-badge">Disconnected</div>
+  </header>
+
+  <!-- Connection Configuration -->
+  <div class="card">
+    <h2>Connection Settings</h2>
+    <div class="grid-2">
+      <div class="field">
+        <label>Target Host IP</label>
+        <input type="text" id="targetHost" value="localhost">
+      </div>
+      <div class="field">
+        <label>Target Port</label>
+        <input type="text" id="targetPort" value="4682">
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="initConnection()">Connect to OpenSpace</button>
+    </div>
+  </div>
+
+  <!-- MIDI Detection Monitor -->
+  <div class="card">
+    <h2>Live MIDI Input Monitor</h2>
+    <div class="grid-2">
+      <div class="field">
+        <label>Active MIDI Device</label>
+        <select id="midiDeviceSelect"><option>Select MIDI Device...</option></select>
+      </div>
+      <div class="field">
+        <label>Last Received Signal</label>
+        <input type="text" id="lastMidiSignal" readonly placeholder="Waiting for MIDI activity...">
+      </div>
+    </div>
+  </div>
+
+  <!-- MIDI Mappings Section -->
+  <div class="card">
+    <h2>Control Mappings</h2>
+    <div id="mappingsContainer"></div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="addMappingRow()">+ Add Control Mapping</button>
+      <button class="btn" onclick="saveToLocalStorage()">💾 Save Configuration</button>
+      <button class="btn" onclick="exportConfig()">📥 Export JSON</button>
+      <button class="btn" onclick="document.getElementById('fileInput').click()">📤 Import JSON</button>
+      <input type="file" id="fileInput" accept=".json" onchange="importConfig(event)">
+    </div>
+  </div>
+
+  <script>
+    // --- Engine State ---
+    let openspace = null;
+    let nativeSocket = null;
+    let isConnected = false;
+    let midiAccess = null;
+    let rowCounter = 0;
+    const activeMappings = {};
+
+    // --- Connection Driver ---
+    function updateStatus(connected, message) {
+      isConnected = connected;
+      const badge = document.getElementById('connection-badge');
+      badge.textContent = message;
+      if (connected) {
+        badge.classList.add('connected');
+      } else {
+        badge.classList.remove('connected');
+      }
+    }
+
+    function initConnection() {
+      const host = document.getElementById('targetHost').value || 'localhost';
+      const port = document.getElementById('targetPort').value || '4682';
+
+      if (typeof window.openspaceApi === 'function') {
+        try {
+          console.log(`Connecting via openspaceApi library to ${host}:${port}...`);
+          const api = window.openspaceApi(host, port);
+
+          api.onConnect(async () => {
+            try {
+              openspace = await api.library();
+              updateStatus(true, `Connected (API Port ${port})`);
+            } catch (err) {
+              console.warn("API Handshake failed, resorting to native WebSocket:", err);
+              initNativeWebSocket(host, port);
+            }
+          });
+
+          api.onDisconnect(() => {
+            updateStatus(false, 'Disconnected from OpenSpace');
+          });
+
+          api.connect();
+          return;
+        } catch (e) {
+          console.warn("Library connection attempt failed:", e);
+        }
+      }
+
+      initNativeWebSocket(host, port);
+    }
+
+    function initNativeWebSocket(host, port) {
+      console.log(`Connecting via Native WebSocket (ws://${host}:${port}/)...`);
+      try {
+        nativeSocket = new WebSocket(`ws://${host}:${port}/`);
+
+        nativeSocket.onopen = () => {
+          updateStatus(true, `Connected (Native WS Port ${port})`);
+        };
+
+        nativeSocket.onclose = () => {
+          updateStatus(false, 'Disconnected from OpenSpace');
+        };
+
+        nativeSocket.onerror = (err) => {
+          console.error("WebSocket Error:", err);
+          updateStatus(false, 'Connection Error');
+        };
+      } catch (err) {
+        console.error("Failed to construct WebSocket:", err);
+      }
+    }
+
+    // --- Execute OpenSpace Command ---
+    function sendLuaCommand(luaScript) {
+      if (!isConnected) return;
+
+      if (openspace) {
+        try {
+          eval(`openspace.${luaScript.replace(/^openspace\./, '')}`);
+          return;
+        } catch (e) {
+          // Fallback to sending raw script string via websocket payload if eval context differs
+        }
+      }
+
+      if (nativeSocket && nativeSocket.readyState === WebSocket.OPEN) {
+        const payload = {
+          topic: 0,
+          type: "luascript",
+          payload: { script: luaScript }
+        };
+        nativeSocket.send(JSON.stringify(payload));
+      }
+    }
+
+    // --- WebMIDI Handling ---
+    async function initMIDI() {
+      if (navigator.requestMIDIAccess) {
+        try {
+          midiAccess = await navigator.requestMIDIAccess();
+          const deviceSelect = document.getElementById('midiDeviceSelect');
+          deviceSelect.innerHTML = '';
+
+          const inputs = Array.from(midiAccess.inputs.values());
+          if (inputs.length === 0) {
+            deviceSelect.innerHTML = '<option>No MIDI devices detected</option>';
+            return;
+          }
+
+          inputs.forEach(input => {
+            const opt = document.createElement('option');
+            opt.value = input.id;
+            opt.textContent = input.name || `MIDI Device ${input.id}`;
+            deviceSelect.appendChild(opt);
+            input.onmidimessage = handleMidiMessage;
+          });
+        } catch (err) {
+          console.error('MIDI Access Error:', err);
+        }
+      }
+    }
+
+    function handleMidiMessage(event) {
+      const [status, data1, data2] = event.data;
+      const channelType = status & 0xF0;
+      const controlId = data1;
+      const value = data2; // 0 - 127
+
+      let typeStr = '';
+      if (channelType === 0xB0) typeStr = 'CC';
+      else if (channelType === 0x90) typeStr = 'NoteOn';
+      else if (channelType === 0x80) typeStr = 'NoteOff';
+
+      if (!typeStr) return;
+
+      const normValue = value / 127.0;
+      document.getElementById('lastMidiSignal').value = `${typeStr} #${controlId} | Raw: ${value} | Norm: ${normValue.toFixed(2)}`;
+
+      const key = `${typeStr}_${controlId}`;
+      if (activeMappings[key]) {
+        const mapping = activeMappings[key];
+        const minVal = parseFloat(mapping.min) || 0;
+        const maxVal = parseFloat(mapping.max) || 1;
+        const scaledVal = minVal + (normValue * (maxVal - minVal));
+
+        const command = mapping.luaTemplate.replace(/\{VALUE\}/g, scaledVal.toFixed(4));
+        sendLuaCommand(command);
+      }
+    }
+
+    // --- Dynamic UI Mapping Rows ---
+    function addMappingRow(data = null) {
+      rowCounter++;
+      const id = rowCounter;
+      const container = document.getElementById('mappingsContainer');
+      const row = document.createElement('div');
+      row.className = 'mapping-row';
+      row.id = `row_${id}`;
+
+      const defaultLua = "openspace.setPropertyValueSingle('NavigationHandler.OrbitalNavigator.Friction.Rotation', {VALUE});";
+
+      row.innerHTML = `
+        <select id="type_${id}" onchange="updateMapping(${id})">
+          <option value="CC">CC</option>
+          <option value="NoteOn">Note On</option>
+        </select>
+        <input type="number" id="num_${id}" placeholder="ID" value="${data ? data.num : '1'}" onchange="updateMapping(${id})">
+        <input type="text" id="lua_${id}" placeholder="openspace.setPropertyValueSingle('Prop', {VALUE})" value="${data ? data.luaTemplate : defaultLua}" onchange="updateMapping(${id})">
+        <input type="number" id="min_${id}" step="0.1" value="${data ? data.min : '0.0'}" onchange="updateMapping(${id})">
+        <input type="number" id="max_${id}" step="0.1" value="${data ? data.max : '1.0'}" onchange="updateMapping(${id})">
+        <button class="btn btn-danger" onclick="removeRow(${id})">×</button>
+      `;
+
+      container.appendChild(row);
+      if (data && data.type) document.getElementById(`type_${id}`).value = data.type;
+      updateMapping(id);
+    }
+
+    function updateMapping(id) {
+      const type = document.getElementById(`type_${id}`).value;
+      const num = document.getElementById(`num_${id}`).value;
+      const luaTemplate = document.getElementById(`lua_${id}`).value;
+      const min = document.getElementById(`min_${id}`).value;
+      const max = document.getElementById(`max_${id}`).value;
+
+      if (num && luaTemplate) {
+        activeMappings[`${type}_${num}`] = { type, num, luaTemplate, min, max };
+      }
+    }
+
+    function removeRow(id) {
+      const row = document.getElementById(`row_${id}`);
+      if (row) {
+        const type = document.getElementById(`type_${id}`).value;
+        const num = document.getElementById(`num_${id}`).value;
+        delete activeMappings[`${type}_${num}`];
+        row.remove();
+      }
+    }
+
+    // --- Import / Export ---
+    function saveToLocalStorage() {
+      localStorage.setItem('openspace_midi_mappings', JSON.stringify(Object.values(activeMappings)));
+      alert('Mappings saved to browser LocalStorage!');
+    }
+
+    function exportConfig() {
+      const blob = new Blob([JSON.stringify(Object.values(activeMappings), null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'openspace-midi-config.json';
+      a.click();
+    }
+
+    function importConfig(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const mappings = JSON.parse(ev.target.result);
+        document.getElementById('mappingsContainer').innerHTML = '';
+        Object.keys(activeMappings).forEach(k => delete activeMappings[k]);
+        mappings.forEach(m => addMappingRow(m));
+      };
+      reader.readAsText(file);
+    }
+
+    // --- Init Page ---
+    window.addEventListener('DOMContentLoaded', () => {
+      initMIDI();
+      addMappingRow();
+      initConnection();
+    });
+  </script>
+</body>
+</html>
