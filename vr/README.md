@@ -1,3 +1,5 @@
+Install dependencies: `pip install openvr websockets mss numpy glfw PyOpenGL`
+
 ## How to Launch & Test
 
 1) Start SteamVR with your Valve Index connected (leave SteamVR in normal Direct Mode).
