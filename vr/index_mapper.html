@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenSpace Valve Index Mapper</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #0b0e14;
+      color: #e0e6ed;
+      padding: 20px;
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 18px;
+      border-bottom: 1px solid #30363d;
+      margin-bottom: 20px;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 1.45rem; color: #58a6ff; }
+    .badges { display: flex; gap: 10px; flex-wrap: wrap; }
+    .status-badge {
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 0.82rem;
+      background: #3d1a1a;
+      color: #ff7b72;
+      border: 1px solid #8e1515;
+    }
+    .status-badge.connected {
+      background: #123d1c;
+      color: #56d364;
+      border-color: #2ea043;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .card h2 { font-size: 1.05rem; margin-bottom: 14px; color: #8b949e; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 0.78rem; color: #8b949e; font-weight: 600; text-transform: uppercase; }
+    input, select {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 0.88rem;
+      font-family: monospace;
+    }
+    input:focus, select:focus { outline: none; border-color: #58a6ff; }
+    .mapping-header, .mapping-row {
+      display: grid;
+      grid-template-columns: 175px 120px 1fr 75px 75px 75px 40px;
+      gap: 8px;
+      align-items: center;
+    }
+    .mapping-header {
+      font-size: 0.75rem;
+      color: #8b949e;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 0 10px 8px 10px;
+    }
+    .mapping-row {
+      background: #0d1117;
+      border: 1px solid #21262d;
+      padding: 9px 10px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+    }
+    .btn {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      padding: 8px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.84rem;
+      font-weight: 600;
+    }
+    .btn:hover { background: #30363d; }
+    .btn-primary { background: #1f6feb; color: #ffffff; border-color: #388bfd; }
+    .btn-primary:hover { background: #388bfd; }
+    .btn-success { background: #238636; color: #ffffff; border-color: #2ea043; }
+    .btn-danger { background: #da3633; color: #ffffff; border-color: #f85149; height: 34px; padding: 0; }
+    .btn-group { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    #fileInput { display: none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>OpenSpace Valve Index Mapper</h1>
+    <div class="badges">
+      <div id="bridge-badge" class="status-badge">Bridge Disconnected</div>
+      <div id="steamvr-badge" class="status-badge">SteamVR Offline</div>
+      <div id="os-badge" class="status-badge">OpenSpace Offline</div>
+    </div>
+  </header>
+
+  <!-- HMD Tracking & Comfort -->
+  <div class="card">
+    <h2>HMD Head Tracking &amp; Stereo Capture</h2>
+    <div class="grid-3">
+      <div class="field">
+        <label>Head-Tracking Mode</label>
+        <select id="headMode" onchange="pushConfig()">
+          <option value="hybrid">Hybrid Additive (Head + Sticks/Grips)</option>
+          <option value="seated">1:1 Seated Absolute (Cockpit Reference)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>HMD Sensitivity (Yaw / Pitch / Roll)</label>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;">
+          <input type="number" id="sensYaw" step="0.05" value="1.0" onchange="pushConfig()">
+          <input type="number" id="sensPitch" step="0.05" value="1.0" onchange="pushConfig()">
+          <input type="number" id="sensRoll" step="0.05" value="0.85" onchange="pushConfig()">
+        </div>
+      </div>
+      <div class="field">
+        <label>Live HMD Attitude (Deg)</label>
+        <input type="text" id="hmdReadout" readonly value="Yaw: 0.0° | Pitch: 0.0° | Roll: 0.0°">
+      </div>
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="sendAction({action: 'recenter'})">Recenter HMD Forward</button>
+      <button class="btn" onclick="sendAction({action: 'test_lua', lua: 'openspace.navigation.retargetAnchor();'})">Retarget Focus Anchor</button>
+    </div>
+  </div>
+
+  <!-- Live Index Controller Monitor -->
+  <div class="card">
+    <h2>Live Index Controller Monitor</h2>
+    <div class="grid-2">
+      <div class="field">
+        <label>Last Active Index Input</label>
+        <input type="text" id="lastSignal" readonly placeholder="Move a stick, pull a trigger, or press a button...">
+      </div>
+      <div class="field">
+        <label>Captured Stereo Window Bounds</label>
+        <input type="text" id="captureBounds" readonly placeholder="Waiting for bridge...">
+      </div>
+    </div>
+  </div>
+
+  <!-- Mappings -->
+  <div class="card">
+    <h2>Valve Index Control Mappings</h2>
+    <div class="mapping-header">
+      <span>Index Input</span>
+      <span>Trigger Mode</span>
+      <span>OpenSpace 0.22 Lua Command ({VALUE})</span>
+      <span>Min</span>
+      <span>Max</span>
+      <span>Deadzone</span>
+      <span></span>
+    </div>
+    <div id="mappingsContainer"></div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="addRow()">+ Add Mapping</button>
+      <button class="btn btn-success" onclick="saveBindings()">Save to Bridge (index_bindings.json)</button>
+      <button class="btn" onclick="exportJSON()">Export JSON</button>
+      <button class="btn" onclick="document.getElementById('fileInput').click()">Import JSON</button>
+      <input type="file" id="fileInput" accept=".json" onchange="importJSON(event)">
+    </div>
+  </div>
+
+  <script>
+    const INPUT_SOURCES = [
+      "Right_Trigger", "Left_Trigger",
+      "Right_Grip", "Left_Grip",
+      "Left_Stick_X", "Left_Stick_Y",
+      "Right_Stick_X", "Right_Stick_Y",
+      "Left_Trackpad_X", "Left_Trackpad_Y",
+      "Right_Trackpad_X", "Right_Trackpad_Y",
+      "Left_Button_A", "Left_Button_B",
+      "Right_Button_A", "Right_Button_B",
+      "Left_Grip_Click", "Right_Grip_Click",
+      "Left_Trackpad_Click", "Right_Trackpad_Click",
+      "Left_Trigger_Click", "Right_Trigger_Click"
+    ];
+
+    let ws = null;
+    let currentConfig = null;
+    let initialLoaded = false;
+
+    function setBadge(id, ok, text) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.classList.toggle("connected", Boolean(ok));
+    }
+
+    function connectBridge() {
+      ws = new WebSocket("ws://127.0.0.1:8081");
+      ws.onopen = () => setBadge("bridge-badge", true, "Bridge Connected");
+      ws.onclose = () => {
+        setBadge("bridge-badge", false, "Bridge Disconnected");
+        setTimeout(connectBridge, 1500);
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type !== "telemetry") return;
+
+        const t = msg.telemetry;
+        setBadge("steamvr-badge", t.steamvr_connected, t.steamvr_connected ? "SteamVR Active" : "SteamVR Offline");
+        setBadge("os-badge", t.openspace_connected, t.openspace_connected ? "OpenSpace Connected" : "OpenSpace Offline");
+
+        const e = t.hmd_euler_deg;
+        document.getElementById("hmdReadout").value = `Yaw: ${e.yaw}° | Pitch: ${e.pitch}° | Roll: ${e.roll}°`;
+        document.getElementById("lastSignal").value = `${t.last_signal.source} (${t.last_signal.value})`;
+        if (t.capture_rect) {
+          const r = t.capture_rect;
+          document.getElementById("captureBounds").value = `${r.width}x${r.height} at (${r.left}, ${r.top})`;
+        }
+
+        if (!initialLoaded && msg.config) {
+          initialLoaded = true;
+          currentConfig = msg.config;
+          renderConfig(currentConfig);
+        } else if (msg.config && document.getElementById("headMode").value !== msg.config.head_mode) {
+          document.getElementById("headMode").value = msg.config.head_mode;
+        }
+      };
+    }
+
+    function sendAction(payload) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(payload));
+      }
+    }
+
+    function renderConfig(cfg) {
+      document.getElementById("headMode").value = cfg.head_mode || "hybrid";
+      document.getElementById("sensYaw").value = cfg.hmd_sensitivity?.yaw ?? 1.0;
+      document.getElementById("sensPitch").value = cfg.hmd_sensitivity?.pitch ?? 1.0;
+      document.getElementById("sensRoll").value = cfg.hmd_sensitivity?.roll ?? 0.85;
+
+      const container = document.getElementById("mappingsContainer");
+      container.innerHTML = "";
+      (cfg.mappings || []).forEach(m => addRow(m));
+    }
+
+    function addRow(data = null) {
+      const container = document.getElementById("mappingsContainer");
+      const row = document.createElement("div");
+      row.className = "mapping-row";
+
+      const opts = INPUT_SOURCES.map(s =>
+        `<option value="${s}" ${data && data.source === s ? "selected" : ""}>${s}</option>`
+      ).join("");
+
+      const mode = data?.mode || "continuous";
+      row.innerHTML = `
+        <select class="m-src" onchange="pushConfig()">${opts}</select>
+        <select class="m-mode" onchange="pushConfig()">
+          <option value="continuous" ${mode === "continuous" ? "selected" : ""}>Continuous</option>
+          <option value="on_press" ${mode === "on_press" ? "selected" : ""}>On Press</option>
+          <option value="step_repeat" ${mode === "step_repeat" ? "selected" : ""}>Step Repeat</option>
+        </select>
+        <input type="text" class="m-lua" value="${(data?.lua || "openspace.navigation.addTruckMovement({VALUE});").replace(/"/g, "&quot;")}" onchange="pushConfig()">
+        <input type="number" class="m-min" step="0.1" value="${data?.min ?? 0.0}" onchange="pushConfig()">
+        <input type="number" class="m-max" step="0.1" value="${data?.max ?? 1.0}" onchange="pushConfig()">
+        <input type="number" class="m-dz" step="0.01" value="${data?.deadzone ?? 0.08}" onchange="pushConfig()">
+        <button class="btn btn-danger" onclick="this.parentElement.remove(); pushConfig();">X</button>
+      `;
+      container.appendChild(row);
+    }
+
+    function collectConfig() {
+      const rows = Array.from(document.querySelectorAll(".mapping-row"));
+      const mappings = rows.map((r, i) => ({
+        id: `m_${i}`,
+        source: r.querySelector(".m-src").value,
+        mode: r.querySelector(".m-mode").value,
+        lua: r.querySelector(".m-lua").value,
+        min: parseFloat(r.querySelector(".m-min").value) || 0,
+        max: parseFloat(r.querySelector(".m-max").value) || 0,
+        deadzone: parseFloat(r.querySelector(".m-dz").value) || 0
+      }));
+
+      return {
+        head_mode: document.getElementById("headMode").value,
+        hmd_sensitivity: {
+          yaw: parseFloat(document.getElementById("sensYaw").value) || 1.0,
+          pitch: parseFloat(document.getElementById("sensPitch").value) || 1.0,
+          roll: parseFloat(document.getElementById("sensRoll").value) || 0.85
+        },
+        mappings
+      };
+    }
+
+    function pushConfig() {
+      const cfg = collectConfig();
+      sendAction({ action: "update_config", config: cfg });
+    }
+
+    function saveBindings() {
+      pushConfig();
+      sendAction({ action: "save_config" });
+    }
+
+    function exportJSON() {
+      const blob = new Blob([JSON.stringify(collectConfig(), null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "openspace-index-bindings.json";
+      a.click();
+    }
+
+    function importJSON(ev) {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const parsed = JSON.parse(e.target.result);
+        renderConfig(parsed);
+        pushConfig();
+      };
+      reader.readAsText(file);
+    }
+
+    window.addEventListener("DOMContentLoaded", connectBridge);
+  </script>
+</body>
+</html>
