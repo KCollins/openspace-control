@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "masteraddress": "localhost",
+  "nodes": [
+    {
+      "address": "localhost",
+      "port": 20401,
+      "windows": [
+        {
+          "name": "GUI",
+          "tags": [ "GUI" ],
+          "fullscreen": false,
+          "draw3d": true,
+          "stereo": "none",
+          "pos": { "x": 40, "y": 40 },
+          "size": { "x": 1280, "y": 720 },
+          "viewports": [
+            {
+              "pos": { "x": 0.0, "y": 0.0 },
+              "size": { "x": 1.0, "y": 1.0 },
+              "projection": {
+                "type": "PlanarProjection",
+                "fov": {
+                  "hfov": 80.0,
+                  "vfov": 50.534015846724
+                },
+                "orientation": { "yaw": 0.0, "pitch": 0.0, "roll": 0.0 }
+              }
+            }
+          ]
+        },
+        {
+          "name": "OpenSpaceVR",
+          "fullscreen": false,
+          "border": false,
+          "draw2d": false,
+          "stereo": "side_by_side",
+          "pos": { "x": 100, "y": 100 },
+          "size": { "x": 2880, "y": 1600 },
+          "viewports": [
+            {
+              "pos": { "x": 0.0, "y": 0.0 },
+              "size": { "x": 1.0, "y": 1.0 },
+              "projection": {
+                "type": "PlanarProjection",
+                "fov": {
+                  "hfov": 105.0,
+                  "vfov": 95.0
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "eyeseparation": 0.065,
+      "pos": { "x": 0.0, "y": 0.0, "z": 0.0 }
+    }
+  ],
+  "meta": {
+    "author": "OpenSpace VR Bridge",
+    "description": "Desktop GUI window + 2880x1600 side-by-side stereo window without 2D overlays for SteamVR Direct Mode.",
+    "license": "MIT License",
+    "name": "Valve Index Stereo + GUI",
+    "version": "1.0"
+  }
+}
