@@ -4,7 +4,7 @@ Install dependencies: `pip install openvr websockets mss numpy glfw PyOpenGL`
 
 0) Move valveindex_vr.json to your config (or user/config) folder.
 
-1) Start SteamVR with your Valve Index connected (leave SteamVR in normal Direct Mode).
+1) Start SteamVR with your Valve Index connected (leave SteamVR in normal Direct Mode). Under "Settings", change your refresh rate to 90 Hz. (This will reduce jitter when you turn your head.)
 
 2) Launch OpenSpace 0.22 using valveindex_vr.json as your SGCT configuration.
 
