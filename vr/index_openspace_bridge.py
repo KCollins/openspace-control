@@ -167,6 +167,48 @@ DEFAULT_CONFIG = {
             "lua": "openspace.navigation.retargetAnchor();",
         },
     ],
+    "haptics": [
+        {
+            "id": "h1",
+            "source_type": "lua_expr",
+            "source": "openspace.navigation.distanceToFocusBoundingSphere()",
+            "mode": "proportional",
+            "hand": "both",
+            "min": 2000000.0,
+            "max": 10000.0,
+            "intensity": 45.0,
+        },
+        {
+            "id": "h2",
+            "source_type": "lua_expr",
+            "source": "math.log10(math.max(1, math.abs(openspace.time.deltaTime())))",
+            "mode": "proportional",
+            "hand": "right",
+            "min": 1.0,
+            "max": 6.0,
+            "intensity": 35.0,
+        },
+        {
+            "id": "h3",
+            "source_type": "event",
+            "source": "FocusNodeChanged",
+            "mode": "event_pulse",
+            "hand": "both",
+            "min": 0.0,
+            "max": 160.0,
+            "intensity": 75.0,
+        },
+        {
+            "id": "h4",
+            "source_type": "input",
+            "source": "Right_Trigger",
+            "mode": "proportional",
+            "hand": "right",
+            "min": 0.15,
+            "max": 1.0,
+            "intensity": 25.0,
+        },
+    ],
 }
 
 
@@ -283,11 +325,30 @@ def compute_eye_texture_bounds(vr_sys, eye, rendered_hfov_deg=103.0, rendered_vf
     return openvr.VRTextureBounds_t(u_min, v_top, u_max, v_bot)
 
 
+def parse_numeric_value(raw):
+    """Extract float from OpenSpace API return payloads, booleans, or scalars."""
+    if isinstance(raw, dict):
+        if "1" in raw:
+            raw = raw["1"]
+        elif "value" in raw:
+            raw = raw["value"]
+        elif len(raw) == 1:
+            raw = next(iter(raw.values()))
+    if isinstance(raw, bool):
+        return 1.0 if raw else 0.0
+    if isinstance(raw, (int, float)):
+        val = float(raw)
+        return val if math.isfinite(val) else None
+    if isinstance(raw, str):
+        try:
+            val = float(raw)
+            return val if math.isfinite(val) else None
+        except ValueError:
+            return None
+    return None
+
+
 def build_local_translate_lua(dx, dy, dz):
-    """
-    Build zero-inertia Lua script moving NavigationState.Position in body-local space:
-    dx = right (m), dy = up (m), dz = forward (m).
-    """
     return (
         "local ns = openspace.navigation.getNavigationState();"
         "if ns and ns.Position and ns.Up then "
@@ -310,10 +371,6 @@ def build_local_translate_lua(dx, dy, dz):
 
 
 def build_gaze_thrust_lua(thrust_val, gx, gy, gz):
-    """
-    Fly along the HMD gaze vector (gx right, gy up, gz forward in body space)
-    scaled by distanceToFocus so speed matches OpenSpace's altitude scaling.
-    """
     return (
         "local ns = openspace.navigation.getNavigationState();"
         "if ns and ns.Position and ns.Up then "
@@ -455,22 +512,28 @@ class BridgeState:
         self.lua_queue = queue.Queue(maxsize=32)
 
         # Latest-wins zero-inertia HMD state
-        self.latest_global_rot = None     # [pitch, yaw, roll] in radians for RenderEngine.GlobalRotation
-        self.pending_walk_delta = [0.0, 0.0, 0.0]  # accumulated [right, up, forward] meters
+        self.latest_global_rot = None
+        self.pending_walk_delta = [0.0, 0.0, 0.0]
         self.q_ref = None
         self.pos_origin = None
         self.pos_prev = None
         self.recenter_requested = True
 
-        # Controller state tracking
+        # Controller & Haptic state
         self.prev_buttons = {}
         self.step_timers = {}
+        self.os_param_values = {}        # key -> latest float value from OpenSpace
+        self.haptic_prev_values = {}     # rule_id -> previous float for threshold crossing
+        self.haptic_bursts = []          # list of {"hand": str, "until": float, "strength": float}
+        self.last_haptic_pulse = {"left": 0.0, "right": 0.0}
+
         self.telemetry = {
             "hmd_euler_deg": {"yaw": 0.0, "pitch": 0.0, "roll": 0.0},
             "hmd_pos_m": {"x": 0.0, "y": 0.0, "z": 0.0},
             "flight_mode": self.config["flight_mode"],
             "walk_scale": self.config["walk_scale"],
             "last_signal": {"source": "None", "value": 0.0},
+            "haptic_output": {"left": 0, "right": 0},
             "openspace_connected": False,
             "steamvr_connected": False,
             "capture_rect": None,
@@ -503,37 +566,125 @@ class BridgeState:
                 pass
         self.lua_queue.put_nowait(script)
 
+    def trigger_haptic_burst(self, hand: str, duration_ms: float, intensity_pct: float):
+        dur_s = max(0.01, min(5.0, float(duration_ms) / 1000.0))
+        strength = max(0.0, min(1.0, float(intensity_pct) / 100.0))
+        with self.lock:
+            self.haptic_bursts.append({
+                "hand": hand.lower(),
+                "until": time.perf_counter() + dur_s,
+                "strength": strength,
+            })
 
-# --- Valve Index Input Reader ---
-def read_controller_inputs(vr_sys):
-    inputs = {}
-    roles = {
-        "Left": vr_sys.getTrackedDeviceIndexForControllerRole(openvr.TrackedControllerRole_LeftHand),
-        "Right": vr_sys.getTrackedDeviceIndexForControllerRole(openvr.TrackedControllerRole_RightHand),
+
+# --- Valve Index Input & Haptic Helpers ---
+def get_controller_indices(vr_sys):
+    return {
+        "left": vr_sys.getTrackedDeviceIndexForControllerRole(openvr.TrackedControllerRole_LeftHand),
+        "right": vr_sys.getTrackedDeviceIndexForControllerRole(openvr.TrackedControllerRole_RightHand),
     }
 
-    for side, idx in roles.items():
+
+def read_controller_inputs(vr_sys, indices):
+    inputs = {}
+    for side_key, prefix in (("left", "Left"), ("right", "Right")):
+        idx = indices[side_key]
         if idx == openvr.k_unTrackedDeviceIndexInvalid:
             continue
         ok, state = vr_sys.getControllerState(idx)
         if not ok:
             continue
 
-        inputs[f"{side}_Stick_X"] = float(state.rAxis[0].x)
-        inputs[f"{side}_Stick_Y"] = float(state.rAxis[0].y)
-        inputs[f"{side}_Trigger"] = float(state.rAxis[1].x)
-        inputs[f"{side}_Grip"] = float(state.rAxis[2].x)
-        inputs[f"{side}_Trackpad_X"] = float(state.rAxis[3].x)
-        inputs[f"{side}_Trackpad_Y"] = float(state.rAxis[3].y)
+        inputs[f"{prefix}_Stick_X"] = float(state.rAxis[0].x)
+        inputs[f"{prefix}_Stick_Y"] = float(state.rAxis[0].y)
+        inputs[f"{prefix}_Trigger"] = float(state.rAxis[1].x)
+        inputs[f"{prefix}_Grip"] = float(state.rAxis[2].x)
+        inputs[f"{prefix}_Trackpad_X"] = float(state.rAxis[3].x)
+        inputs[f"{prefix}_Trackpad_Y"] = float(state.rAxis[3].y)
 
         pressed = state.ulButtonPressed
-        inputs[f"{side}_Button_A"] = 1.0 if (pressed & (1 << openvr.k_EButton_A)) else 0.0
-        inputs[f"{side}_Button_B"] = 1.0 if (pressed & (1 << openvr.k_EButton_ApplicationMenu)) else 0.0
-        inputs[f"{side}_Grip_Click"] = 1.0 if (pressed & (1 << openvr.k_EButton_Grip)) else 0.0
-        inputs[f"{side}_Trackpad_Click"] = 1.0 if (pressed & (1 << openvr.k_EButton_SteamVR_Touchpad)) else 0.0
-        inputs[f"{side}_Trigger_Click"] = 1.0 if (pressed & (1 << openvr.k_EButton_SteamVR_Trigger)) else 0.0
+        inputs[f"{prefix}_Button_A"] = 1.0 if (pressed & (1 << openvr.k_EButton_A)) else 0.0
+        inputs[f"{prefix}_Button_B"] = 1.0 if (pressed & (1 << openvr.k_EButton_ApplicationMenu)) else 0.0
+        inputs[f"{prefix}_Grip_Click"] = 1.0 if (pressed & (1 << openvr.k_EButton_Grip)) else 0.0
+        inputs[f"{prefix}_Trackpad_Click"] = 1.0 if (pressed & (1 << openvr.k_EButton_SteamVR_Touchpad)) else 0.0
+        inputs[f"{prefix}_Trigger_Click"] = 1.0 if (pressed & (1 << openvr.k_EButton_SteamVR_Trigger)) else 0.0
 
     return inputs
+
+
+def evaluate_haptics(bridge: BridgeState, vr_sys, indices, ctrl_inputs, now: float):
+    """Compute Left/Right haptic intensity (0..1) from OpenSpace params, events, and inputs."""
+    with bridge.lock:
+        rules = list(bridge.config.get("haptics", []))
+        os_vals = dict(bridge.os_param_values)
+        active_bursts = [b for b in bridge.haptic_bursts if b["until"] > now]
+        bridge.haptic_bursts = active_bursts
+
+    strengths = {"left": 0.0, "right": 0.0}
+
+    # 1. Apply any active timed event bursts
+    for b in active_bursts:
+        h = b["hand"]
+        if h in ("left", "both"):
+            strengths["left"] = max(strengths["left"], b["strength"])
+        if h in ("right", "both"):
+            strengths["right"] = max(strengths["right"], b["strength"])
+
+    # 2. Evaluate continuous & threshold haptic mappings
+    for idx_rule, r in enumerate(rules):
+        rule_id = r.get("id", f"h_{idx_rule}")
+        src_type = r.get("source_type", "lua_expr")
+        src = r.get("source", "").strip()
+        mode = r.get("mode", "proportional")
+        hand = r.get("hand", "both").lower()
+        min_v = float(r.get("min", 0.0))
+        max_v = float(r.get("max", 1.0))
+        intensity_pct = max(0.0, min(100.0, float(r.get("intensity", 50.0))))
+
+        if not src or src_type == "event":
+            continue
+
+        val = None
+        if src_type == "input":
+            val = ctrl_inputs.get(src)
+        else:
+            val = os_vals.get(f"{src_type}:{src}")
+
+        if val is None:
+            continue
+
+        rule_strength = 0.0
+        if mode == "proportional":
+            if max_v != min_v:
+                t = (val - min_v) / (max_v - min_v)
+                t = max(0.0, min(1.0, t))
+            else:
+                t = 1.0 if val >= max_v else 0.0
+            rule_strength = t * (intensity_pct / 100.0)
+        elif mode == "event_pulse":
+            prev_val = bridge.haptic_prev_values.get(rule_id)
+            bridge.haptic_prev_values[rule_id] = val
+            if prev_val is not None and prev_val < min_v and val >= min_v:
+                dur_ms = max(15.0, max_v if max_v > 0 else 150.0)
+                bridge.trigger_haptic_burst(hand, dur_ms, intensity_pct)
+                rule_strength = intensity_pct / 100.0
+
+        if rule_strength > 0.0:
+            if hand in ("left", "both"):
+                strengths["left"] = max(strengths["left"], rule_strength)
+            if hand in ("right", "both"):
+                strengths["right"] = max(strengths["right"], rule_strength)
+
+    # 3. Fire OpenVR haptic pulses (respecting >=5ms OpenVR per-axis cooldown)
+    for side in ("left", "right"):
+        s = strengths[side]
+        bridge.telemetry["haptic_output"][side] = int(round(s * 100))
+        dev_idx = indices[side]
+        if s > 0.01 and dev_idx != openvr.k_unTrackedDeviceIndexInvalid:
+            if now - bridge.last_haptic_pulse[side] >= 0.006:
+                pulse_us = int(max(40, min(3999, round(s * 3999))))
+                vr_sys.triggerHapticPulse(dev_idx, 0, pulse_us)
+                bridge.last_haptic_pulse[side] = now
 
 
 # --- SteamVR Compositor + Tracking Thread ---
@@ -624,7 +775,7 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                     compositor.submit(openvr.Eye_Right, tex_right_desc, bounds_right)
 
             # 2. Process 6DoF HMD Pose (Zero-Inertia Direct Rotation + Room-Scale Translation)
-            gaze_dir_body = (0.0, 0.0, 1.0)  # (right, up, forward) in body frame
+            gaze_dir_body = (0.0, 0.0, 1.0)
             hmd_pose = poses[openvr.k_unTrackedDeviceIndex_Hmd]
 
             if hmd_pose.bPoseIsValid:
@@ -638,20 +789,16 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                     bridge.recenter_requested = False
 
                 if recenter or bridge.q_ref is None or bridge.pos_prev is None:
-                    # Recenter forward yaw & room origin while keeping gravity horizon level
                     bridge.q_ref = yaw_only_quat(yaw_raw)
                     bridge.pos_origin = pos_curr
                     bridge.pos_prev = pos_curr
 
-                # Head orientation relative to recentered forward (+X right, +Y up, -Z forward)
                 q_offset = quat_mul(quat_inv(bridge.q_ref), q_curr)
                 pitch_off, yaw_off, roll_off = quat_to_euler_rad(q_offset)
 
-                # Gaze vector in body frame (right, up, forward)
                 gx_vr, gy_vr, gz_vr = quat_rotate_vec(q_offset, (0.0, 0.0, -1.0))
                 gaze_dir_body = (gx_vr, gy_vr, -gz_vr)
 
-                # Room-scale delta since last VR frame rotated into recentered body frame
                 dp_world = (
                     pos_curr[0] - bridge.pos_prev[0],
                     pos_curr[1] - bridge.pos_prev[1],
@@ -660,7 +807,6 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                 bridge.pos_prev = pos_curr
                 dx_vr, dy_vr, dz_vr = quat_rotate_vec(quat_inv(bridge.q_ref), dp_world)
 
-                # Relative room position for telemetry
                 rel_world = (
                     pos_curr[0] - bridge.pos_origin[0],
                     pos_curr[1] - bridge.pos_origin[1],
@@ -668,8 +814,6 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                 )
                 rx_m, ry_m, rz_m = quat_rotate_vec(quat_inv(bridge.q_ref), rel_world)
 
-                # OpenSpace RenderEngine.GlobalRotation rotates the scene relative to the camera
-                # using GLM's [X=Pitch, Y=Yaw, Z=Roll] Euler order: decompose quat_inv(q_offset) directly.
                 q_view = quat_inv(q_offset)
                 os_pitch, os_yaw, os_roll = quat_to_glm_xyz(q_view)
 
@@ -698,9 +842,13 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                         "z": round(-rz_m, 2),
                     }
 
-            # 3. Process Valve Index Controllers (with Orbital Inertia Preserved)
+            # 3. Process Valve Index Controllers & Haptic Feedback
             lua_cmds = []
-            ctrl_inputs = read_controller_inputs(vr_sys)
+            indices = get_controller_indices(vr_sys)
+            ctrl_inputs = read_controller_inputs(vr_sys, indices)
+
+            evaluate_haptics(bridge, vr_sys, indices, ctrl_inputs, now)
+
             with bridge.lock:
                 mappings = list(bridge.config["mappings"])
                 flight_mode = bridge.config.get("flight_mode", "body")
@@ -782,9 +930,118 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
         glfw.terminate()
 
 
+# --- Async OpenSpace Haptic Telemetry Poller & Event Subscriber ---
+async def haptic_telemetry_task(api, bridge: BridgeState, stop_event: asyncio.Event):
+    """Poll OpenSpace Lua expressions and maintain property/event subscriptions for haptics."""
+    prop_tasks = {}
+    event_tasks = {}
+
+    async def watch_property(uri: str):
+        topic = api.subscribeToProperty(uri)
+        try:
+            async for data in topic:
+                if stop_event.is_set():
+                    break
+                val = parse_numeric_value(data)
+                if val is not None:
+                    with bridge.lock:
+                        bridge.os_param_values[f"property:{uri}"] = val
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            try:
+                topic.cancel()
+            except Exception:
+                pass
+
+    async def watch_event(event_name: str):
+        topic = api.subscribeToEvent(event_name)
+        try:
+            async for _ in topic:
+                if stop_event.is_set():
+                    break
+                with bridge.lock:
+                    rules = [
+                        r for r in bridge.config.get("haptics", [])
+                        if r.get("source_type") == "event" and r.get("source", "").strip() == event_name
+                    ]
+                for r in rules:
+                    hand = r.get("hand", "both")
+                    dur_ms = float(r.get("max", 160.0)) or 160.0
+                    intensity = float(r.get("intensity", 75.0))
+                    bridge.trigger_haptic_burst(hand, dur_ms, intensity)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        finally:
+            try:
+                topic.cancel()
+            except Exception:
+                pass
+
+    try:
+        while not stop_event.is_set():
+            with bridge.lock:
+                rules = list(bridge.config.get("haptics", []))
+
+            wanted_props = {
+                r["source"].strip()
+                for r in rules
+                if r.get("source_type") == "property" and r.get("source", "").strip()
+            }
+            wanted_events = {
+                r["source"].strip()
+                for r in rules
+                if r.get("source_type") == "event" and r.get("source", "").strip()
+            }
+            lua_exprs = list({
+                r["source"].strip()
+                for r in rules
+                if r.get("source_type") == "lua_expr" and r.get("source", "").strip()
+            })
+
+            # Sync property subscriptions
+            for uri in list(prop_tasks.keys()):
+                if uri not in wanted_props:
+                    prop_tasks.pop(uri).cancel()
+            for uri in wanted_props:
+                if uri not in prop_tasks or prop_tasks[uri].done():
+                    prop_tasks[uri] = asyncio.create_task(watch_property(uri))
+
+            # Sync event subscriptions
+            for ev_name in list(event_tasks.keys()):
+                if ev_name not in wanted_events:
+                    event_tasks.pop(ev_name).cancel()
+            for ev_name in wanted_events:
+                if ev_name not in event_tasks or event_tasks[ev_name].done():
+                    event_tasks[ev_name] = asyncio.create_task(watch_event(ev_name))
+
+            # Evaluate Lua expressions (~20 Hz)
+            for expr in lua_exprs:
+                if stop_event.is_set():
+                    break
+                try:
+                    script = expr if expr.lstrip().startswith("return ") else f"return ({expr})"
+                    res = await api.executeLuaScript(script, getReturnValue=True, shouldBeSynchronized=False)
+                    val = parse_numeric_value(res)
+                    if val is not None:
+                        with bridge.lock:
+                            bridge.os_param_values[f"lua_expr:{expr}"] = val
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.05)
+    finally:
+        for t in list(prop_tasks.values()) + list(event_tasks.values()):
+            t.cancel()
+
+
 # --- Official OpenSpace 0.22 Async Socket API Loop ---
 async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
-    """Stream 1:1 HMD properties + room-scale translation + controller Lua to OpenSpace 0.22."""
+    """Stream 1:1 HMD properties + room-scale translation + controller Lua + haptics."""
     if OpenSpaceApi is None:
         print("[OpenSpace] Error: 'openspace-api' package not installed. Run: pip install openspace-api")
         return
@@ -792,8 +1049,10 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
     while True:
         disconnected_event = asyncio.Event()
         api = OpenSpaceApi(host, port)
+        haptic_task = None
 
         async def on_connect():
+            nonlocal haptic_task
             bridge.openspace_connected = True
             bridge.telemetry["openspace_connected"] = True
             print(f"[OpenSpace] Connected via openspace-api to {host}:{port}")
@@ -802,6 +1061,7 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
                 api.setProperty("RenderEngine.GlobalRotation", [0.0, 0.0, 0.0])
             except Exception:
                 pass
+            haptic_task = asyncio.create_task(haptic_telemetry_task(api, bridge, disconnected_event))
 
         def on_disconnect():
             if bridge.openspace_connected:
@@ -819,7 +1079,6 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
             while not disconnected_event.is_set():
                 did_work = False
 
-                # 1. Latest-wins direct 1:1 HMD view rotation (zero inertia, zero queue lag)
                 with bridge.lock:
                     rot = bridge.latest_global_rot
                     bridge.latest_global_rot = None
@@ -834,7 +1093,6 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
                     last_sent_rot = rot
                     did_work = True
 
-                # 2. Zero-inertia 6DoF room-scale translation step
                 if dx != 0.0 or dy != 0.0 or dz != 0.0:
                     await api.executeLuaScript(
                         build_local_translate_lua(dx, dy, dz),
@@ -843,7 +1101,6 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
                     )
                     did_work = True
 
-                # 3. Inertial hand-controller Lua commands
                 try:
                     script = bridge.lua_queue.get_nowait()
                     await api.executeLuaScript(script, getReturnValue=False, shouldBeSynchronized=True)
@@ -856,6 +1113,9 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
         except Exception:
             bridge.openspace_connected = False
             bridge.telemetry["openspace_connected"] = False
+            disconnected_event.set()
+            if haptic_task is not None:
+                haptic_task.cancel()
             try:
                 api.disconnect()
             except Exception:
@@ -893,6 +1153,12 @@ async def ui_ws_handler(websocket, bridge: BridgeState):
                     bridge.recenter_requested = True
             elif action == "test_lua":
                 bridge.enqueue_lua(msg.get("lua", ""))
+            elif action == "test_haptic":
+                bridge.trigger_haptic_burst(
+                    msg.get("hand", "both"),
+                    msg.get("duration_ms", 200),
+                    msg.get("intensity", 80),
+                )
     except Exception:
         pass
     finally:

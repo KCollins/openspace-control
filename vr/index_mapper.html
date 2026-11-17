@@ -11,7 +11,7 @@
       background-color: #0b0e14;
       color: #e0e6ed;
       padding: 20px;
-      max-width: 1280px;
+      max-width: 1340px;
       margin: 0 auto;
     }
     header {
@@ -46,7 +46,16 @@
       padding: 18px;
       margin-bottom: 18px;
     }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
     .card h2 { font-size: 1.05rem; margin-bottom: 14px; color: #8b949e; }
+    .card-header h2 { margin-bottom: 0; }
     .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
     .field { display: flex; flex-direction: column; gap: 6px; }
@@ -57,8 +66,9 @@
       color: #c9d1d9;
       padding: 8px 10px;
       border-radius: 6px;
-      font-size: 0.88rem;
+      font-size: 0.86rem;
       font-family: monospace;
+      width: 100%;
     }
     input:focus, select:focus { outline: none; border-color: #58a6ff; }
     .slider-row {
@@ -105,23 +115,38 @@
     }
     .mapping-header, .mapping-row {
       display: grid;
-      grid-template-columns: 175px 120px 1fr 75px 75px 75px 40px;
+      grid-template-columns: 170px 115px 1fr 75px 75px 75px 38px;
       gap: 8px;
       align-items: center;
     }
-    .mapping-header {
-      font-size: 0.75rem;
+    .haptic-header, .haptic-row {
+      display: grid;
+      grid-template-columns: 155px 1fr 165px 88px 95px 95px 80px 38px 38px;
+      gap: 8px;
+      align-items: center;
+    }
+    .mapping-header, .haptic-header {
+      font-size: 0.73rem;
       color: #8b949e;
       font-weight: 700;
       text-transform: uppercase;
       padding: 0 10px 8px 10px;
     }
-    .mapping-row {
+    .mapping-row, .haptic-row {
       background: #0d1117;
       border: 1px solid #21262d;
       padding: 9px 10px;
       border-radius: 6px;
       margin-bottom: 8px;
+    }
+    .haptic-meter {
+      font-family: monospace;
+      font-size: 0.82rem;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      padding: 5px 12px;
+      border-radius: 6px;
+      color: #79c0ff;
     }
     .btn {
       background: #21262d;
@@ -137,8 +162,10 @@
     .btn-primary { background: #1f6feb; color: #ffffff; border-color: #388bfd; }
     .btn-primary:hover { background: #388bfd; }
     .btn-success { background: #238636; color: #ffffff; border-color: #2ea043; }
+    .btn-test { background: #1f6feb; color: #ffffff; border-color: #388bfd; height: 34px; padding: 0; }
     .btn-danger { background: #da3633; color: #ffffff; border-color: #f85149; height: 34px; padding: 0; }
     .btn-group { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    .hint { font-size: 0.78rem; color: #8b949e; margin-top: 6px; }
     #fileInput { display: none; }
   </style>
 </head>
@@ -213,7 +240,50 @@
     </div>
   </div>
 
-  <!-- Mappings -->
+  <!-- Haptic Feedback Mappings -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Haptic Feedback Mappings (Index Controllers)</h2>
+      <div class="haptic-meter" id="hapticMeter">Haptics Out — Left: 0% | Right: 0%</div>
+    </div>
+
+    <datalist id="hapticSuggestions">
+      <option value="openspace.navigation.distanceToFocusBoundingSphere()">
+      <option value="openspace.navigation.distanceToFocus()">
+      <!-- <option value="math.log10(math.max(1, math.abs(openspace.time.deltaTime())))"> -->
+      <option value="openspace.navigation.isFlying() and 1 or 0">
+      <option value="FocusNodeChanged">
+      <option value="Right_Trigger">
+      <option value="Left_Trigger">
+      <option value="Right_Grip">
+      <option value="Left_Grip">
+    </datalist>
+
+    <div class="haptic-header">
+      <span>Source Type</span>
+      <span>Parameter / Event / Input</span>
+      <span>Response Mode</span>
+      <span>Hand</span>
+      <span>Min / Thresh</span>
+      <span>Max / Burst ms</span>
+      <span>Intensity %</span>
+      <span>Test</span>
+      <span></span>
+    </div>
+    <div id="hapticsContainer"></div>
+
+    <p class="hint">
+      <strong>Proportional:</strong> Scales vibration from 0% at <em>Min</em> to <em>Intensity %</em> at <em>Max</em> (set Min &gt; Max to rumble stronger as values decrease, e.g. altitude).
+      <strong>On Event / Thresh:</strong> Fires a pulse of <em>Burst ms</em> when an OpenSpace event fires or a parameter crosses <em>Thresh</em>.
+    </p>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="addHapticRow()">+ Add Haptic Mapping</button>
+      <button class="btn" onclick="sendAction({action: 'test_haptic', hand: 'both', duration_ms: 250, intensity: 85})">Test Both Controllers</button>
+    </div>
+  </div>
+
+  <!-- Control Mappings -->
   <div class="card">
     <h2>Valve Index Control Mappings (Orbital Inertia Enabled)</h2>
     <div class="mapping-header">
@@ -228,8 +298,8 @@
     <div id="mappingsContainer"></div>
 
     <div class="btn-group">
-      <button class="btn btn-primary" onclick="addRow()">+ Add Mapping</button>
-      <button class="btn btn-success" onclick="saveBindings()">Save to Bridge (index_bindings.json)</button>
+      <button class="btn btn-primary" onclick="addRow()">+ Add Control Mapping</button>
+      <button class="btn btn-success" onclick="saveBindings()">Save All to Bridge (index_bindings.json)</button>
       <button class="btn" onclick="exportJSON()">Export JSON</button>
       <button class="btn" onclick="document.getElementById('fileInput').click()">Import JSON</button>
       <input type="file" id="fileInput" accept=".json" onchange="importJSON(event)">
@@ -289,6 +359,10 @@
           const p = t.hmd_pos_m;
           document.getElementById("hmdPosReadout").value = `Room Pos: X ${p.x.toFixed(2)}m | Y ${p.y.toFixed(2)}m | Z ${p.z.toFixed(2)}m`;
         }
+        if (t.haptic_output) {
+          document.getElementById("hapticMeter").textContent =
+            `Haptics Out — Left: ${t.haptic_output.left}% | Right: ${t.haptic_output.right}%`;
+        }
 
         document.getElementById("lastSignal").value = `${t.last_signal.source} (${t.last_signal.value})`;
         if (t.capture_rect) {
@@ -322,9 +396,59 @@
       document.getElementById("invPitch").checked = Boolean(cfg.invert_hmd?.pitch);
       document.getElementById("invRoll").checked = Boolean(cfg.invert_hmd?.roll);
 
+      const hapticsContainer = document.getElementById("hapticsContainer");
+      hapticsContainer.innerHTML = "";
+      (cfg.haptics || []).forEach(h => addHapticRow(h));
+
       const container = document.getElementById("mappingsContainer");
       container.innerHTML = "";
       (cfg.mappings || []).forEach(m => addRow(m));
+    }
+
+    function addHapticRow(data = null) {
+      const container = document.getElementById("hapticsContainer");
+      const row = document.createElement("div");
+      row.className = "haptic-row";
+
+      const srcType = data?.source_type || "lua_expr";
+      const mode = data?.mode || "proportional";
+      const hand = data?.hand || "both";
+      const srcVal = (data?.source || "openspace.navigation.distanceToFocusBoundingSphere()").replace(/"/g, "&quot;");
+
+      row.innerHTML = `
+        <select class="h-type" onchange="pushConfig()">
+          <option value="lua_expr" ${srcType === "lua_expr" ? "selected" : ""}>Lua Expression</option>
+          <option value="property" ${srcType === "property" ? "selected" : ""}>OpenSpace Property</option>
+          <option value="event" ${srcType === "event" ? "selected" : ""}>OpenSpace Event</option>
+          <option value="input" ${srcType === "input" ? "selected" : ""}>Controller Input</option>
+        </select>
+        <input type="text" class="h-src" list="hapticSuggestions" value="${srcVal}" onchange="pushConfig()">
+        <select class="h-mode" onchange="pushConfig()">
+          <option value="proportional" ${mode === "proportional" ? "selected" : ""}>Proportional (Rumble)</option>
+          <option value="event_pulse" ${mode === "event_pulse" ? "selected" : ""}>On Event / Thresh (Pulse)</option>
+        </select>
+        <select class="h-hand" onchange="pushConfig()">
+          <option value="both" ${hand === "both" ? "selected" : ""}>Both</option>
+          <option value="left" ${hand === "left" ? "selected" : ""}>Left</option>
+          <option value="right" ${hand === "right" ? "selected" : ""}>Right</option>
+        </select>
+        <input type="number" class="h-min" step="any" value="${data?.min ?? 0.0}" onchange="pushConfig()">
+        <input type="number" class="h-max" step="any" value="${data?.max ?? 1.0}" onchange="pushConfig()">
+        <input type="number" class="h-int" step="1" min="0" max="100" value="${data?.intensity ?? 50}" onchange="pushConfig()">
+        <button type="button" class="btn btn-test" title="Test Haptic Pulse" onclick="testHapticRow(this)">&#9889;</button>
+        <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); pushConfig();">X</button>
+      `;
+      container.appendChild(row);
+    }
+
+    function testHapticRow(btn) {
+      const row = btn.parentElement;
+      const hand = row.querySelector(".h-hand").value;
+      const mode = row.querySelector(".h-mode").value;
+      const maxVal = parseFloat(row.querySelector(".h-max").value) || 200;
+      const intensity = parseFloat(row.querySelector(".h-int").value) || 60;
+      const durMs = mode === "event_pulse" && maxVal > 10 ? maxVal : 220;
+      sendAction({ action: "test_haptic", hand, duration_ms: durMs, intensity });
     }
 
     function addRow(data = null) {
@@ -348,12 +472,24 @@
         <input type="number" class="m-min" step="0.1" value="${data?.min ?? 0.0}" onchange="pushConfig()">
         <input type="number" class="m-max" step="0.1" value="${data?.max ?? 1.0}" onchange="pushConfig()">
         <input type="number" class="m-dz" step="0.01" value="${data?.deadzone ?? 0.08}" onchange="pushConfig()">
-        <button class="btn btn-danger" onclick="this.parentElement.remove(); pushConfig();">X</button>
+        <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); pushConfig();">X</button>
       `;
       container.appendChild(row);
     }
 
     function collectConfig() {
+      const hRows = Array.from(document.querySelectorAll(".haptic-row"));
+      const haptics = hRows.map((r, i) => ({
+        id: `h_${i}`,
+        source_type: r.querySelector(".h-type").value,
+        source: r.querySelector(".h-src").value,
+        mode: r.querySelector(".h-mode").value,
+        hand: r.querySelector(".h-hand").value,
+        min: parseFloat(r.querySelector(".h-min").value) || 0,
+        max: parseFloat(r.querySelector(".h-max").value) || 0,
+        intensity: parseFloat(r.querySelector(".h-int").value) || 0
+      }));
+
       const rows = Array.from(document.querySelectorAll(".mapping-row"));
       const mappings = rows.map((r, i) => ({
         id: `m_${i}`,
@@ -373,6 +509,7 @@
           pitch: document.getElementById("invPitch").checked,
           roll: document.getElementById("invRoll").checked
         },
+        haptics,
         mappings
       };
     }
