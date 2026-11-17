@@ -51,7 +51,7 @@
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
     .field { display: flex; flex-direction: column; gap: 6px; }
     label { font-size: 0.78rem; color: #8b949e; font-weight: 600; text-transform: uppercase; }
-    input, select {
+    input[type="text"], input[type="number"], select {
       background: #0d1117;
       border: 1px solid #30363d;
       color: #c9d1d9;
@@ -61,6 +61,48 @@
       font-family: monospace;
     }
     input:focus, select:focus { outline: none; border-color: #58a6ff; }
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    input[type="range"] {
+      flex: 1;
+      accent-color: #58a6ff;
+      cursor: pointer;
+    }
+    .preset-pills {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .pill {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #8b949e;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .pill:hover { color: #e0e6ed; border-color: #58a6ff; }
+    .invert-row {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      padding-top: 4px;
+      font-size: 0.82rem;
+      color: #c9d1d9;
+    }
+    .invert-row label {
+      text-transform: none;
+      font-weight: 500;
+      color: #c9d1d9;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
     .mapping-header, .mapping-row {
       display: grid;
       grid-template-columns: 175px 120px 1fr 75px 75px 75px 40px;
@@ -111,32 +153,47 @@
     </div>
   </header>
 
-  <!-- HMD Tracking & Comfort -->
+  <!-- 6DoF HMD Tracking & Flight Mode -->
   <div class="card">
-    <h2>HMD Head Tracking &amp; Stereo Capture</h2>
+    <h2>6DoF HMD Tracking &amp; Flight Direction (Zero-Inertia)</h2>
     <div class="grid-3">
       <div class="field">
-        <label>Head-Tracking Mode</label>
-        <select id="headMode" onchange="pushConfig()">
-          <option value="hybrid">Hybrid Additive (Head + Sticks/Grips)</option>
-          <option value="seated">1:1 Seated Absolute (Cockpit Reference)</option>
+        <label>Trigger / Stick Flight Direction</label>
+        <select id="flightMode" onchange="pushConfig()">
+          <option value="body">Orbital / Body Heading (Look Out Side Windows)</option>
+          <option value="gaze">Gaze-Directed Flight (Fly Where You Look)</option>
         </select>
-      </div>
-      <div class="field">
-        <label>HMD Sensitivity (Yaw / Pitch / Roll)</label>
-        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;">
-          <input type="number" id="sensYaw" step="0.05" value="1.0" onchange="pushConfig()">
-          <input type="number" id="sensPitch" step="0.05" value="1.0" onchange="pushConfig()">
-          <input type="number" id="sensRoll" step="0.05" value="0.85" onchange="pushConfig()">
+        <div class="invert-row">
+          <label><input type="checkbox" id="invYaw" onchange="pushConfig()"> Invert Yaw</label>
+          <label><input type="checkbox" id="invPitch" onchange="pushConfig()"> Invert Pitch</label>
+          <label><input type="checkbox" id="invRoll" onchange="pushConfig()"> Invert Roll</label>
         </div>
       </div>
+
       <div class="field">
-        <label>Live HMD Attitude (Deg)</label>
-        <input type="text" id="hmdReadout" readonly value="Yaw: 0.0° | Pitch: 0.0° | Roll: 0.0°">
+        <label>Room-Scale Walk Multiplier (<span id="walkScaleLabel">1.0</span>x)</label>
+        <div class="slider-row">
+          <input type="range" id="walkScaleSlider" min="0" max="100" step="0.5" value="1.0" oninput="syncWalkScale(this.value)">
+          <input type="number" id="walkScaleNum" style="width:82px;" step="0.5" min="0" value="1.0" onchange="syncWalkScale(this.value)">
+        </div>
+        <div class="preset-pills">
+          <button type="button" class="pill" onclick="syncWalkScale(0)">0x (3DoF)</button>
+          <button type="button" class="pill" onclick="syncWalkScale(1)">1x (Human)</button>
+          <button type="button" class="pill" onclick="syncWalkScale(10)">10x</button>
+          <button type="button" class="pill" onclick="syncWalkScale(100)">100x</button>
+          <button type="button" class="pill" onclick="syncWalkScale(1000)">1000x</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Live 6DoF HMD Pose (Relative to Origin)</label>
+        <input type="text" id="hmdRotReadout" readonly value="Yaw: 0.0° | Pitch: 0.0° | Roll: 0.0°">
+        <input type="text" id="hmdPosReadout" readonly value="Room Pos: X 0.00m | Y 0.00m | Z 0.00m">
       </div>
     </div>
+
     <div class="btn-group">
-      <button class="btn btn-primary" onclick="sendAction({action: 'recenter'})">Recenter HMD Forward</button>
+      <button class="btn btn-primary" onclick="sendAction({action: 'recenter'})">Recenter HMD (Forward + Room Origin)</button>
       <button class="btn" onclick="sendAction({action: 'test_lua', lua: 'openspace.navigation.retargetAnchor();'})">Retarget Focus Anchor</button>
     </div>
   </div>
@@ -158,7 +215,7 @@
 
   <!-- Mappings -->
   <div class="card">
-    <h2>Valve Index Control Mappings</h2>
+    <h2>Valve Index Control Mappings (Orbital Inertia Enabled)</h2>
     <div class="mapping-header">
       <span>Index Input</span>
       <span>Trigger Mode</span>
@@ -195,13 +252,20 @@
     ];
 
     let ws = null;
-    let currentConfig = null;
     let initialLoaded = false;
 
     function setBadge(id, ok, text) {
       const el = document.getElementById(id);
       el.textContent = text;
       el.classList.toggle("connected", Boolean(ok));
+    }
+
+    function syncWalkScale(val) {
+      const num = Math.max(0, parseFloat(val) || 0);
+      document.getElementById("walkScaleLabel").textContent = num.toFixed(1);
+      document.getElementById("walkScaleNum").value = num;
+      document.getElementById("walkScaleSlider").value = Math.min(100, num);
+      pushConfig();
     }
 
     function connectBridge() {
@@ -220,7 +284,12 @@
         setBadge("os-badge", t.openspace_connected, t.openspace_connected ? "OpenSpace Connected" : "OpenSpace Offline");
 
         const e = t.hmd_euler_deg;
-        document.getElementById("hmdReadout").value = `Yaw: ${e.yaw}° | Pitch: ${e.pitch}° | Roll: ${e.roll}°`;
+        document.getElementById("hmdRotReadout").value = `Yaw: ${e.yaw}° | Pitch: ${e.pitch}° | Roll: ${e.roll}°`;
+        if (t.hmd_pos_m) {
+          const p = t.hmd_pos_m;
+          document.getElementById("hmdPosReadout").value = `Room Pos: X ${p.x.toFixed(2)}m | Y ${p.y.toFixed(2)}m | Z ${p.z.toFixed(2)}m`;
+        }
+
         document.getElementById("lastSignal").value = `${t.last_signal.source} (${t.last_signal.value})`;
         if (t.capture_rect) {
           const r = t.capture_rect;
@@ -229,10 +298,9 @@
 
         if (!initialLoaded && msg.config) {
           initialLoaded = true;
-          currentConfig = msg.config;
-          renderConfig(currentConfig);
-        } else if (msg.config && document.getElementById("headMode").value !== msg.config.head_mode) {
-          document.getElementById("headMode").value = msg.config.head_mode;
+          renderConfig(msg.config);
+        } else if (msg.config && document.getElementById("flightMode").value !== msg.config.flight_mode) {
+          document.getElementById("flightMode").value = msg.config.flight_mode;
         }
       };
     }
@@ -244,10 +312,15 @@
     }
 
     function renderConfig(cfg) {
-      document.getElementById("headMode").value = cfg.head_mode || "hybrid";
-      document.getElementById("sensYaw").value = cfg.hmd_sensitivity?.yaw ?? 1.0;
-      document.getElementById("sensPitch").value = cfg.hmd_sensitivity?.pitch ?? 1.0;
-      document.getElementById("sensRoll").value = cfg.hmd_sensitivity?.roll ?? 0.85;
+      document.getElementById("flightMode").value = cfg.flight_mode || "body";
+      const wsVal = cfg.walk_scale ?? 1.0;
+      document.getElementById("walkScaleLabel").textContent = Number(wsVal).toFixed(1);
+      document.getElementById("walkScaleNum").value = wsVal;
+      document.getElementById("walkScaleSlider").value = Math.min(100, wsVal);
+
+      document.getElementById("invYaw").checked = Boolean(cfg.invert_hmd?.yaw);
+      document.getElementById("invPitch").checked = Boolean(cfg.invert_hmd?.pitch);
+      document.getElementById("invRoll").checked = Boolean(cfg.invert_hmd?.roll);
 
       const container = document.getElementById("mappingsContainer");
       container.innerHTML = "";
@@ -293,19 +366,19 @@
       }));
 
       return {
-        head_mode: document.getElementById("headMode").value,
-        hmd_sensitivity: {
-          yaw: parseFloat(document.getElementById("sensYaw").value) || 1.0,
-          pitch: parseFloat(document.getElementById("sensPitch").value) || 1.0,
-          roll: parseFloat(document.getElementById("sensRoll").value) || 0.85
+        flight_mode: document.getElementById("flightMode").value,
+        walk_scale: parseFloat(document.getElementById("walkScaleNum").value) || 0,
+        invert_hmd: {
+          yaw: document.getElementById("invYaw").checked,
+          pitch: document.getElementById("invPitch").checked,
+          roll: document.getElementById("invRoll").checked
         },
         mappings
       };
     }
 
     function pushConfig() {
-      const cfg = collectConfig();
-      sendAction({ action: "update_config", config: cfg });
+      sendAction({ action: "update_config", config: collectConfig() });
     }
 
     function saveBindings() {

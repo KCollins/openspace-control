@@ -38,12 +38,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = SCRIPT_DIR / "index_bindings.json"
 
 DEFAULT_CONFIG = {
-    "head_mode": "hybrid",  # "hybrid" (additive delta) or "seated" (1:1 relative to recenter)
-    "hmd_sensitivity": {
-        "yaw": 1.0,
-        "pitch": 1.0,
-        "roll": 0.85,
-    },
+    "flight_mode": "body",  # "body" (orbital/body heading) or "gaze" (fly where you look)
+    "walk_scale": 1.0,      # 1.0 = true 1:1 meters in room-scale playspace
     "invert_hmd": {
         "yaw": False,
         "pitch": False,
@@ -159,7 +155,7 @@ DEFAULT_CONFIG = {
             "deadzone": 0.0,
             "min": 0.0,
             "max": 1.0,
-            "lua": "__BRIDGE_TOGGLE_HEAD_MODE__",
+            "lua": "__BRIDGE_TOGGLE_FLIGHT_MODE__",
         },
         {
             "id": "m13",
@@ -174,9 +170,10 @@ DEFAULT_CONFIG = {
 }
 
 
-# --- Quaternion Math Helpers ---
-def matrix34_to_quat(m):
-    """Convert OpenVR 3x4 HmdMatrix34_t rotation block to (w, x, y, z) quaternion."""
+# --- Quaternion & 3D Math Helpers ---
+def matrix34_to_pose(m):
+    """Extract ((x, y, z), (w, x, y, z)) from OpenVR 3x4 HmdMatrix34_t."""
+    pos = (float(m[0][3]), float(m[1][3]), float(m[2][3]))
     r00, r01, r02 = m[0][0], m[0][1], m[0][2]
     r10, r11, r12 = m[1][0], m[1][1], m[1][2]
     r20, r21, r22 = m[2][0], m[2][1], m[2][2]
@@ -208,7 +205,7 @@ def matrix34_to_quat(m):
         z = 0.25 * s
 
     norm = math.sqrt(w * w + x * x + y * y + z * z) or 1.0
-    return (w / norm, x / norm, y / norm, z / norm)
+    return pos, (w / norm, x / norm, y / norm, z / norm)
 
 
 def quat_inv(q):
@@ -226,6 +223,19 @@ def quat_mul(a, b):
     )
 
 
+def quat_rotate_vec(q, v):
+    """Rotate 3D vector v by unit quaternion q."""
+    qv = (0.0, v[0], v[1], v[2])
+    res = quat_mul(quat_mul(q, qv), quat_inv(q))
+    return (res[1], res[2], res[3])
+
+
+def yaw_only_quat(yaw_rad):
+    """Unit quaternion representing rotation around +Y (up) by yaw_rad."""
+    half = 0.5 * yaw_rad
+    return (math.cos(half), 0.0, math.sin(half), 0.0)
+
+
 def quat_to_euler_rad(q):
     """Return (pitch, yaw, roll) in radians for OpenVR (+X right, +Y up, -Z forward)."""
     w, x, y, z = q
@@ -236,30 +246,98 @@ def quat_to_euler_rad(q):
     return pitch, yaw, roll
 
 
+def quat_to_glm_xyz(q):
+    """
+    Decompose unit quaternion q into (rx, ry, rz) matching GLM's
+    glm::quat(glm::vec3(rx, ry, rz)) = Q_x(rx) * Q_y(ry) * Q_z(rz),
+    which OpenSpace RenderEngine.GlobalRotation uses for [Pitch, Yaw, Roll].
+    """
+    w, x, y, z = q
+    r00 = 1.0 - 2.0 * (y * y + z * z)
+    r01 = 2.0 * (x * y - w * z)
+    r02 = max(-1.0, min(1.0, 2.0 * (x * z + w * y)))
+    r12 = 2.0 * (y * z - w * x)
+    r22 = 1.0 - 2.0 * (x * x + y * y)
+
+    ry = math.asin(r02)
+    if abs(r02) < 0.99999:
+        rx = math.atan2(-r12, r22)
+        rz = math.atan2(-r01, r00)
+    else:
+        r11 = 1.0 - 2.0 * (x * x + z * z)
+        r21 = 2.0 * (y * z + w * x)
+        rx = math.atan2(r21, r11)
+        rz = 0.0
+    return rx, ry, rz
+
+
 def compute_eye_texture_bounds(vr_sys, eye, rendered_hfov_deg=103.0, rendered_vfov_deg=104.0):
-    """
-    Align symmetric SGCT planar render (centered at 0,0) with OpenVR's asymmetric
-    canted eye frustum so the optical center of each eye matches the Index lenses.
-    """
     left_tan, right_tan, top_tan, bottom_tan = vr_sys.getProjectionRaw(eye)
-    # Note: In OpenVR getProjectionRaw, top_tan is negative (OpenGL Y-down) and bottom_tan is positive
     h_tan_half = math.tan(math.radians(rendered_hfov_deg * 0.5))
     v_tan_half = math.tan(math.radians(rendered_vfov_deg * 0.5))
 
-    u_min = 0.5 + (left_tan / (2.0 * h_tan_half))
-    u_max = 0.5 + (right_tan / (2.0 * h_tan_half))
-    # Flip V for top-down captured texture -> OpenGL bottom-up
-    v_top = 0.5 - (top_tan / (2.0 * v_tan_half))
-    v_bot = 0.5 - (bottom_tan / (2.0 * v_tan_half))
-
-    u_min = max(0.0, min(1.0, u_min))
-    u_max = max(0.0, min(1.0, u_max))
-    v_top = max(0.0, min(1.0, v_top))
-    v_bot = max(0.0, min(1.0, v_bot))
+    u_min = max(0.0, min(1.0, 0.5 + (left_tan / (2.0 * h_tan_half))))
+    u_max = max(0.0, min(1.0, 0.5 + (right_tan / (2.0 * h_tan_half))))
+    v_top = max(0.0, min(1.0, 0.5 - (top_tan / (2.0 * v_tan_half))))
+    v_bot = max(0.0, min(1.0, 0.5 - (bottom_tan / (2.0 * v_tan_half))))
     return openvr.VRTextureBounds_t(u_min, v_top, u_max, v_bot)
 
 
-# --- Per-Window Stereo Frame Grabber (Windows Graphics Capture + Linux Fallback) ---
+def build_local_translate_lua(dx, dy, dz):
+    """
+    Build zero-inertia Lua script moving NavigationState.Position in body-local space:
+    dx = right (m), dy = up (m), dz = forward (m).
+    """
+    return (
+        "local ns = openspace.navigation.getNavigationState();"
+        "if ns and ns.Position and ns.Up then "
+        "local px,py,pz = ns.Position[1],ns.Position[2],ns.Position[3];"
+        "local d = math.sqrt(px*px+py*py+pz*pz);"
+        "if d > 0.001 then "
+        "local fx,fy,fz = -px/d,-py/d,-pz/d;"
+        "local ux,uy,uz = ns.Up[1],ns.Up[2],ns.Up[3];"
+        "local rx,ry,rz = fy*uz-fz*uy, fz*ux-fx*uz, fx*uy-fy*ux;"
+        "local rl = math.sqrt(rx*rx+ry*ry+rz*rz);"
+        "if rl > 1e-6 then "
+        "rx,ry,rz = rx/rl,ry/rl,rz/rl;"
+        "ux,uy,uz = ry*fz-rz*fy, rz*fx-rx*fz, rx*fy-ry*fx;"
+        f"ns.Position[1] = px + rx*({dx:.6f}) + ux*({dy:.6f}) + fx*({dz:.6f});"
+        f"ns.Position[2] = py + ry*({dx:.6f}) + uy*({dy:.6f}) + fy*({dz:.6f});"
+        f"ns.Position[3] = pz + rz*({dx:.6f}) + uz*({dy:.6f}) + fz*({dz:.6f});"
+        "openspace.navigation.setNavigationState(ns);"
+        "end end end"
+    )
+
+
+def build_gaze_thrust_lua(thrust_val, gx, gy, gz):
+    """
+    Fly along the HMD gaze vector (gx right, gy up, gz forward in body space)
+    scaled by distanceToFocus so speed matches OpenSpace's altitude scaling.
+    """
+    return (
+        "local ns = openspace.navigation.getNavigationState();"
+        "if ns and ns.Position and ns.Up then "
+        "local px,py,pz = ns.Position[1],ns.Position[2],ns.Position[3];"
+        "local d = math.sqrt(px*px+py*py+pz*pz);"
+        "if d > 0.001 then "
+        "local fx,fy,fz = -px/d,-py/d,-pz/d;"
+        "local ux,uy,uz = ns.Up[1],ns.Up[2],ns.Up[3];"
+        "local rx,ry,rz = fy*uz-fz*uy, fz*ux-fx*uz, fx*uy-fy*ux;"
+        "local rl = math.sqrt(rx*rx+ry*ry+rz*rz);"
+        "if rl > 1e-6 then "
+        "rx,ry,rz = rx/rl,ry/rl,rz/rl;"
+        "ux,uy,uz = ry*fz-rz*fy, rz*fx-rx*fz, rx*fy-ry*fx;"
+        f"local step = ({thrust_val:.5f}) * 0.012 * d;"
+        f"local dx,dy,dz = step*({gx:.5f}), step*({gy:.5f}), step*({gz:.5f});"
+        "ns.Position[1] = px + rx*dx + ux*dy + fx*dz;"
+        "ns.Position[2] = py + ry*dx + uy*dy + fy*dz;"
+        "ns.Position[3] = pz + rz*dx + uz*dy + fz*dz;"
+        "openspace.navigation.setNavigationState(ns);"
+        "end end end"
+    )
+
+
+# --- Per-Window Stereo Frame Grabber ---
 class StereoWindowGrabber:
     def __init__(self, window_title: str):
         self.window_title = window_title
@@ -376,10 +454,12 @@ class BridgeState:
         self.steamvr_connected = False
         self.lua_queue = queue.Queue(maxsize=32)
 
-        # HMD tracking state
-        self.q_prev = None
+        # Latest-wins zero-inertia HMD state
+        self.latest_global_rot = None     # [pitch, yaw, roll] in radians for RenderEngine.GlobalRotation
+        self.pending_walk_delta = [0.0, 0.0, 0.0]  # accumulated [right, up, forward] meters
         self.q_ref = None
-        self.last_seated_euler = (0.0, 0.0, 0.0)
+        self.pos_origin = None
+        self.pos_prev = None
         self.recenter_requested = True
 
         # Controller state tracking
@@ -387,7 +467,9 @@ class BridgeState:
         self.step_timers = {}
         self.telemetry = {
             "hmd_euler_deg": {"yaw": 0.0, "pitch": 0.0, "roll": 0.0},
-            "head_mode": self.config["head_mode"],
+            "hmd_pos_m": {"x": 0.0, "y": 0.0, "z": 0.0},
+            "flight_mode": self.config["flight_mode"],
+            "walk_scale": self.config["walk_scale"],
             "last_signal": {"source": "None", "value": 0.0},
             "openspace_connected": False,
             "steamvr_connected": False,
@@ -424,7 +506,6 @@ class BridgeState:
 
 # --- Valve Index Input Reader ---
 def read_controller_inputs(vr_sys):
-    """Return dict of normalized axis and digital button values for Left & Right Index controllers."""
     inputs = {}
     roles = {
         "Left": vr_sys.getTrackedDeviceIndexForControllerRole(openvr.TrackedControllerRole_LeftHand),
@@ -497,7 +578,6 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
     poses_t = openvr.TrackedDevicePose_t * openvr.k_unMaxTrackedDeviceCount
     poses = poses_t()
 
-    # Align SGCT's symmetric 103x104 deg planar render with the Index's asymmetric eye frustums
     bounds_left = compute_eye_texture_bounds(vr_sys, openvr.Eye_Left, 103.0, 104.0)
     bounds_right = compute_eye_texture_bounds(vr_sys, openvr.Eye_Right, 103.0, 104.0)
 
@@ -543,62 +623,87 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                     compositor.submit(openvr.Eye_Left, tex_left_desc, bounds_left)
                     compositor.submit(openvr.Eye_Right, tex_right_desc, bounds_right)
 
-            lua_cmds = []
-
-            # 2. Process HMD 6DoF Orientation
+            # 2. Process 6DoF HMD Pose (Zero-Inertia Direct Rotation + Room-Scale Translation)
+            gaze_dir_body = (0.0, 0.0, 1.0)  # (right, up, forward) in body frame
             hmd_pose = poses[openvr.k_unTrackedDeviceIndex_Hmd]
+
             if hmd_pose.bPoseIsValid:
-                q_curr = matrix34_to_quat(hmd_pose.mDeviceToAbsoluteTracking)
-                pitch_abs, yaw_abs, roll_abs = quat_to_euler_rad(q_curr)
-                bridge.telemetry["hmd_euler_deg"] = {
-                    "yaw": round(math.degrees(yaw_abs), 1),
-                    "pitch": round(math.degrees(pitch_abs), 1),
-                    "roll": round(math.degrees(roll_abs), 1),
-                }
+                pos_curr, q_curr = matrix34_to_pose(hmd_pose.mDeviceToAbsoluteTracking)
+                _, yaw_raw, _ = quat_to_euler_rad(q_curr)
 
                 with bridge.lock:
-                    head_mode = bridge.config["head_mode"]
-                    sens = dict(bridge.config["hmd_sensitivity"])
                     inv = dict(bridge.config.get("invert_hmd", {}))
+                    walk_scale = float(bridge.config.get("walk_scale", 1.0))
                     recenter = bridge.recenter_requested
                     bridge.recenter_requested = False
 
-                if recenter or bridge.q_ref is None:
-                    bridge.q_ref = q_curr
-                    bridge.q_prev = q_curr
-                    bridge.last_seated_euler = (0.0, 0.0, 0.0)
+                if recenter or bridge.q_ref is None or bridge.pos_prev is None:
+                    # Recenter forward yaw & room origin while keeping gravity horizon level
+                    bridge.q_ref = yaw_only_quat(yaw_raw)
+                    bridge.pos_origin = pos_curr
+                    bridge.pos_prev = pos_curr
 
-                gain = 18.0
-                if head_mode == "hybrid":
-                    q_delta = quat_mul(quat_inv(bridge.q_prev), q_curr)
-                    dp, dy, dr = quat_to_euler_rad(q_delta)
-                    bridge.q_prev = q_curr
-                else:
-                    q_offset = quat_mul(quat_inv(bridge.q_ref), q_curr)
-                    sp, sy, sr = quat_to_euler_rad(q_offset)
-                    lp, ly, lr = bridge.last_seated_euler
-                    dp, dy, dr = (sp - lp), (sy - ly), (sr - lr)
-                    bridge.last_seated_euler = (sp, sy, sr)
-                    bridge.q_prev = q_curr
+                # Head orientation relative to recentered forward (+X right, +Y up, -Z forward)
+                q_offset = quat_mul(quat_inv(bridge.q_ref), q_curr)
+                pitch_off, yaw_off, roll_off = quat_to_euler_rad(q_offset)
 
-                s_yaw = -1.0 if inv.get("yaw", False) else 1.0
-                s_pitch = -1.0 if inv.get("pitch", False) else 1.0
-                s_roll = -1.0 if inv.get("roll", False) else 1.0
+                # Gaze vector in body frame (right, up, forward)
+                gx_vr, gy_vr, gz_vr = quat_rotate_vec(q_offset, (0.0, 0.0, -1.0))
+                gaze_dir_body = (gx_vr, gy_vr, -gz_vr)
 
-                # Positive horizontal in addLocalRotation turns camera RIGHT; turning head left gives +dy
-                yaw_cmd = dy * gain * sens["yaw"] * s_yaw
-                pitch_cmd = dp * gain * sens["pitch"] * s_pitch
-                roll_cmd = -dr * gain * sens["roll"] * s_roll
+                # Room-scale delta since last VR frame rotated into recentered body frame
+                dp_world = (
+                    pos_curr[0] - bridge.pos_prev[0],
+                    pos_curr[1] - bridge.pos_prev[1],
+                    pos_curr[2] - bridge.pos_prev[2],
+                )
+                bridge.pos_prev = pos_curr
+                dx_vr, dy_vr, dz_vr = quat_rotate_vec(quat_inv(bridge.q_ref), dp_world)
 
-                if abs(yaw_cmd) > 1e-4 or abs(pitch_cmd) > 1e-4:
-                    lua_cmds.append(f"openspace.navigation.addLocalRotation({yaw_cmd:.5f}, {pitch_cmd:.5f});")
-                if abs(roll_cmd) > 1e-4:
-                    lua_cmds.append(f"openspace.navigation.addLocalRoll({roll_cmd:.5f});")
+                # Relative room position for telemetry
+                rel_world = (
+                    pos_curr[0] - bridge.pos_origin[0],
+                    pos_curr[1] - bridge.pos_origin[1],
+                    pos_curr[2] - bridge.pos_origin[2],
+                )
+                rx_m, ry_m, rz_m = quat_rotate_vec(quat_inv(bridge.q_ref), rel_world)
 
-            # 3. Process Valve Index Controllers
+                # OpenSpace RenderEngine.GlobalRotation rotates the scene relative to the camera
+                # using GLM's [X=Pitch, Y=Yaw, Z=Roll] Euler order: decompose quat_inv(q_offset) directly.
+                q_view = quat_inv(q_offset)
+                os_pitch, os_yaw, os_roll = quat_to_glm_xyz(q_view)
+
+                if inv.get("pitch", False):
+                    os_pitch = -os_pitch
+                if inv.get("yaw", False):
+                    os_yaw = -os_yaw
+                if inv.get("roll", False):
+                    os_roll = -os_roll
+
+                with bridge.lock:
+                    bridge.latest_global_rot = [os_pitch, os_yaw, os_roll]
+                    if walk_scale > 0.0:
+                        bridge.pending_walk_delta[0] += dx_vr * walk_scale
+                        bridge.pending_walk_delta[1] += dy_vr * walk_scale
+                        bridge.pending_walk_delta[2] += (-dz_vr) * walk_scale
+
+                    bridge.telemetry["hmd_euler_deg"] = {
+                        "yaw": round(math.degrees(-yaw_off), 1),
+                        "pitch": round(math.degrees(pitch_off), 1),
+                        "roll": round(math.degrees(-roll_off), 1),
+                    }
+                    bridge.telemetry["hmd_pos_m"] = {
+                        "x": round(rx_m, 2),
+                        "y": round(ry_m, 2),
+                        "z": round(-rz_m, 2),
+                    }
+
+            # 3. Process Valve Index Controllers (with Orbital Inertia Preserved)
+            lua_cmds = []
             ctrl_inputs = read_controller_inputs(vr_sys)
             with bridge.lock:
                 mappings = list(bridge.config["mappings"])
+                flight_mode = bridge.config.get("flight_mode", "body")
 
             for m in mappings:
                 src = m.get("source", "")
@@ -624,13 +729,12 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                         if lua_tpl == "__BRIDGE_RECENTER__":
                             with bridge.lock:
                                 bridge.recenter_requested = True
-                        elif lua_tpl == "__BRIDGE_TOGGLE_HEAD_MODE__":
+                        elif lua_tpl == "__BRIDGE_TOGGLE_FLIGHT_MODE__":
                             with bridge.lock:
-                                bridge.config["head_mode"] = (
-                                    "seated" if bridge.config["head_mode"] == "hybrid" else "hybrid"
+                                bridge.config["flight_mode"] = (
+                                    "gaze" if bridge.config["flight_mode"] == "body" else "body"
                                 )
-                                bridge.recenter_requested = True
-                                bridge.telemetry["head_mode"] = bridge.config["head_mode"]
+                                bridge.telemetry["flight_mode"] = bridge.config["flight_mode"]
                         else:
                             lua_cmds.append(lua_tpl.replace("{VALUE}", f"{max_v:.4f}"))
 
@@ -656,7 +760,17 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
                         scaled = min_v + norm * (max_v - min_v)
 
                     if abs(scaled) > 1e-4:
-                        lua_cmds.append(lua_tpl.replace("{VALUE}", f"{scaled:.5f}"))
+                        if flight_mode == "gaze" and "addTruckMovement" in lua_tpl:
+                            lua_cmds.append(
+                                build_gaze_thrust_lua(
+                                    scaled,
+                                    gaze_dir_body[0],
+                                    gaze_dir_body[1],
+                                    gaze_dir_body[2],
+                                )
+                            )
+                        else:
+                            lua_cmds.append(lua_tpl.replace("{VALUE}", f"{scaled:.5f}"))
 
             if lua_cmds:
                 bridge.enqueue_lua(" ".join(lua_cmds))
@@ -670,7 +784,7 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
 
 # --- Official OpenSpace 0.22 Async Socket API Loop ---
 async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
-    """Connect to OpenSpace 0.22 via official async openspace-api (default TCP port 4681)."""
+    """Stream 1:1 HMD properties + room-scale translation + controller Lua to OpenSpace 0.22."""
     if OpenSpaceApi is None:
         print("[OpenSpace] Error: 'openspace-api' package not installed. Run: pip install openspace-api")
         return
@@ -682,13 +796,10 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
         async def on_connect():
             bridge.openspace_connected = True
             bridge.telemetry["openspace_connected"] = True
-            print(f"[OpenSpace] Connected via openspace-api (v1.0.0 handshake complete) to {host}:{port}")
-            # Disable rotational inertia so 1:1 head tracking doesn't drift or lag
+            print(f"[OpenSpace] Connected via openspace-api to {host}:{port}")
             try:
-                await api.executeLuaScript(
-                    "openspace.setPropertyValueSingle('NavigationHandler.OrbitalNavigator.Friction.RotationalFriction', false);",
-                    getReturnValue=False,
-                )
+                api.setProperty("NavigationHandler.OrbitalNavigator.Friction.RotationalFriction", True)
+                api.setProperty("RenderEngine.GlobalRotation", [0.0, 0.0, 0.0])
             except Exception:
                 pass
 
@@ -702,13 +813,45 @@ async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
         api.onConnect(on_connect)
         api.onDisconnect(on_disconnect)
 
+        last_sent_rot = None
         try:
             await api.connect()
             while not disconnected_event.is_set():
+                did_work = False
+
+                # 1. Latest-wins direct 1:1 HMD view rotation (zero inertia, zero queue lag)
+                with bridge.lock:
+                    rot = bridge.latest_global_rot
+                    bridge.latest_global_rot = None
+                    dx, dy, dz = bridge.pending_walk_delta
+                    if abs(dx) > 0.0005 or abs(dy) > 0.0005 or abs(dz) > 0.0005:
+                        bridge.pending_walk_delta = [0.0, 0.0, 0.0]
+                    else:
+                        dx = dy = dz = 0.0
+
+                if rot is not None and rot != last_sent_rot:
+                    api.setProperty("RenderEngine.GlobalRotation", rot)
+                    last_sent_rot = rot
+                    did_work = True
+
+                # 2. Zero-inertia 6DoF room-scale translation step
+                if dx != 0.0 or dy != 0.0 or dz != 0.0:
+                    await api.executeLuaScript(
+                        build_local_translate_lua(dx, dy, dz),
+                        getReturnValue=False,
+                        shouldBeSynchronized=True,
+                    )
+                    did_work = True
+
+                # 3. Inertial hand-controller Lua commands
                 try:
                     script = bridge.lua_queue.get_nowait()
                     await api.executeLuaScript(script, getReturnValue=False, shouldBeSynchronized=True)
+                    did_work = True
                 except queue.Empty:
+                    pass
+
+                if not did_work:
                     await asyncio.sleep(0.004)
         except Exception:
             bridge.openspace_connected = False
@@ -741,7 +884,8 @@ async def ui_ws_handler(websocket, bridge: BridgeState):
             if action == "update_config":
                 with bridge.lock:
                     bridge.config.update(msg.get("config", {}))
-                    bridge.telemetry["head_mode"] = bridge.config["head_mode"]
+                    bridge.telemetry["flight_mode"] = bridge.config.get("flight_mode", "body")
+                    bridge.telemetry["walk_scale"] = bridge.config.get("walk_scale", 1.0)
             elif action == "save_config":
                 bridge.save_config()
             elif action == "recenter":
