@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "masteraddress": "localhost",
+  "nodes": [
+    {
+      "address": "localhost",
+      "port": 20401,
+      "windows": [
+        {
+          "name": "OpenSpaceVR",
+          "fullscreen": false,
+          "border": false,
+          "draw2d": false,
+          "stereo": "none",
+          "pos": { "x": 0, "y": 0 },
+          "size": { "x": 2048, "y": 1280 },
+          "viewports": [
+            {
+              "pos": { "x": 0.0, "y": 0.0 },
+              "size": { "x": 0.5, "y": 1.0 },
+              "eye": "left",
+              "projection": {
+                "type": "PlanarProjection",
+                "fov": {
+                  "up": 52.0,
+                  "down": 52.0,
+                  "left": 54.5,
+                  "right": 49.0
+                },
+                "orientation": { "yaw": 5.0, "pitch": 0.0, "roll": 0.0 }
+              }
+            },
+            {
+              "pos": { "x": 0.5, "y": 0.0 },
+              "size": { "x": 0.5, "y": 1.0 },
+              "eye": "right",
+              "projection": {
+                "type": "PlanarProjection",
+                "fov": {
+                  "up": 52.0,
+                  "down": 52.0,
+                  "left": 49.0,
+                  "right": 54.5
+                },
+                "orientation": { "yaw": -5.0, "pitch": 0.0, "roll": 0.0 }
+              }
+            }
+          ]
+        },
+        {
+          "name": "GUI",
+          "tags": [ "GUI" ],
+          "fullscreen": false,
+          "draw3d": false,
+          "stereo": "none",
+          "pos": { "x": 50, "y": 50 },
+          "size": { "x": 1050, "y": 680 },
+          "viewports": [
+            {
+              "pos": { "x": 0.0, "y": 0.0 },
+              "size": { "x": 1.0, "y": 1.0 },
+              "projection": {
+                "type": "PlanarProjection",
+                "fov": {
+                  "hfov": 80.0,
+                  "vfov": 50.534015846724
+                },
+                "orientation": { "yaw": 0.0, "pitch": 0.0, "roll": 0.0 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "eyeseparation": 0.02,
+      "pos": { "x": 0.0, "y": 0.0, "z": 0.0 }
+    }
+  ],
+  "meta": {
+    "author": "OpenSpace VR Bridge",
+    "description": "Dual canted-eye viewports (+5/-5 deg yaw) with asymmetric Valve Index FOVs.",
+    "license": "MIT License",
+    "name": "Valve Index Canted Stereo + GUI (v5)",
+    "version": "5.0"
+  }
+}

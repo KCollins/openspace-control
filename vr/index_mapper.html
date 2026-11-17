@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenSpace Valve Index Mapper</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #0b0e14;
+      color: #e0e6ed;
+      padding: 20px;
+      max-width: 1340px;
+      margin: 0 auto;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 18px;
+      border-bottom: 1px solid #30363d;
+      margin-bottom: 20px;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 1.45rem; color: #58a6ff; }
+    .badges { display: flex; gap: 10px; flex-wrap: wrap; }
+    .status-badge {
+      padding: 6px 12px;
+      border-radius: 12px;
+      font-size: 0.82rem;
+      background: #3d1a1a;
+      color: #ff7b72;
+      border: 1px solid #8e1515;
+    }
+    .status-badge.connected {
+      background: #123d1c;
+      color: #56d364;
+      border-color: #2ea043;
+    }
+    .card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .card h2 { font-size: 1.05rem; margin-bottom: 14px; color: #8b949e; }
+    .card-header h2 { margin-bottom: 0; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 0.78rem; color: #8b949e; font-weight: 600; text-transform: uppercase; }
+    input[type="text"], input[type="number"], select {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 0.86rem;
+      font-family: monospace;
+      width: 100%;
+    }
+    input:focus, select:focus { outline: none; border-color: #58a6ff; }
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    input[type="range"] {
+      flex: 1;
+      accent-color: #58a6ff;
+      cursor: pointer;
+    }
+    .preset-pills {
+      display: flex;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .pill {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #8b949e;
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .pill:hover { color: #e0e6ed; border-color: #58a6ff; }
+    .invert-row {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      padding-top: 4px;
+      font-size: 0.82rem;
+      color: #c9d1d9;
+    }
+    .invert-row label {
+      text-transform: none;
+      font-weight: 500;
+      color: #c9d1d9;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+    }
+    .mapping-header, .mapping-row {
+      display: grid;
+      grid-template-columns: 170px 115px 1fr 75px 75px 75px 38px;
+      gap: 8px;
+      align-items: center;
+    }
+    .haptic-header, .haptic-row {
+      display: grid;
+      grid-template-columns: 155px 1fr 165px 88px 95px 95px 80px 38px 38px;
+      gap: 8px;
+      align-items: center;
+    }
+    .mapping-header, .haptic-header {
+      font-size: 0.73rem;
+      color: #8b949e;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 0 10px 8px 10px;
+    }
+    .mapping-row, .haptic-row {
+      background: #0d1117;
+      border: 1px solid #21262d;
+      padding: 9px 10px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+    }
+    .haptic-meter {
+      font-family: monospace;
+      font-size: 0.82rem;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      padding: 5px 12px;
+      border-radius: 6px;
+      color: #79c0ff;
+    }
+    .btn {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+      padding: 8px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.84rem;
+      font-weight: 600;
+    }
+    .btn:hover { background: #30363d; }
+    .btn-primary { background: #1f6feb; color: #ffffff; border-color: #388bfd; }
+    .btn-primary:hover { background: #388bfd; }
+    .btn-success { background: #238636; color: #ffffff; border-color: #2ea043; }
+    .btn-test { background: #1f6feb; color: #ffffff; border-color: #388bfd; height: 34px; padding: 0; }
+    .btn-danger { background: #da3633; color: #ffffff; border-color: #f85149; height: 34px; padding: 0; }
+    .btn-group { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    .hint { font-size: 0.78rem; color: #8b949e; margin-top: 6px; }
+    #fileInput { display: none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>OpenSpace Valve Index Mapper</h1>
+    <div class="badges">
+      <div id="bridge-badge" class="status-badge">Bridge Disconnected</div>
+      <div id="steamvr-badge" class="status-badge">SteamVR Offline</div>
+      <div id="os-badge" class="status-badge">OpenSpace Offline</div>
+    </div>
+  </header>
+
+  <!-- 6DoF HMD Tracking & Flight Mode -->
+  <div class="card">
+    <h2>6DoF HMD Tracking &amp; Flight Direction (Zero-Inertia)</h2>
+    <div class="grid-3">
+      <div class="field">
+        <label>Trigger / Stick Flight Direction</label>
+        <select id="flightMode" onchange="pushConfig()">
+          <option value="body">Orbital / Body Heading (Look Out Side Windows)</option>
+          <option value="gaze">Gaze-Directed Flight (Fly Where You Look)</option>
+        </select>
+        <div class="invert-row">
+          <label><input type="checkbox" id="invYaw" onchange="pushConfig()"> Invert Yaw</label>
+          <label><input type="checkbox" id="invPitch" onchange="pushConfig()"> Invert Pitch</label>
+          <label><input type="checkbox" id="invRoll" onchange="pushConfig()"> Invert Roll</label>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Room-Scale Walk Multiplier (<span id="walkScaleLabel">1.0</span>x)</label>
+        <div class="slider-row">
+          <input type="range" id="walkScaleSlider" min="0" max="100" step="0.5" value="1.0" oninput="syncWalkScale(this.value)">
+          <input type="number" id="walkScaleNum" style="width:82px;" step="0.5" min="0" value="1.0" onchange="syncWalkScale(this.value)">
+        </div>
+        <div class="preset-pills">
+          <button type="button" class="pill" onclick="syncWalkScale(0)">0x (3DoF)</button>
+          <button type="button" class="pill" onclick="syncWalkScale(1)">1x (Human)</button>
+          <button type="button" class="pill" onclick="syncWalkScale(10)">10x</button>
+          <button type="button" class="pill" onclick="syncWalkScale(100)">100x</button>
+          <button type="button" class="pill" onclick="syncWalkScale(1000)">1000x</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Live 6DoF HMD Pose (Relative to Origin)</label>
+        <input type="text" id="hmdRotReadout" readonly value="Yaw: 0.0° | Pitch: 0.0° | Roll: 0.0°">
+        <input type="text" id="hmdPosReadout" readonly value="Room Pos: X 0.00m | Y 0.00m | Z 0.00m">
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="sendAction({action: 'recenter'})">Recenter HMD (Forward + Room Origin)</button>
+      <button class="btn" onclick="sendAction({action: 'test_lua', lua: 'openspace.navigation.retargetAnchor();'})">Retarget Focus Anchor</button>
+    </div>
+  </div>
+
+  <!-- Live Index Controller Monitor -->
+  <div class="card">
+    <h2>Live Index Controller Monitor</h2>
+    <div class="grid-2">
+      <div class="field">
+        <label>Last Active Index Input</label>
+        <input type="text" id="lastSignal" readonly placeholder="Move a stick, pull a trigger, or press a button...">
+      </div>
+      <div class="field">
+        <label>Captured Stereo Window Bounds</label>
+        <input type="text" id="captureBounds" readonly placeholder="Waiting for bridge...">
+      </div>
+    </div>
+  </div>
+
+  <!-- Haptic Feedback Mappings -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Haptic Feedback Mappings (Index Controllers)</h2>
+      <div class="haptic-meter" id="hapticMeter">Haptics Out — Left: 0% | Right: 0%</div>
+    </div>
+
+    <datalist id="hapticSuggestions">
+      <option value="openspace.navigation.distanceToFocusBoundingSphere()">
+      <option value="openspace.navigation.distanceToFocus()">
+      <!-- <option value="math.log10(math.max(1, math.abs(openspace.time.deltaTime())))"> -->
+      <option value="openspace.navigation.isFlying() and 1 or 0">
+      <option value="FocusNodeChanged">
+      <option value="Right_Trigger">
+      <option value="Left_Trigger">
+      <option value="Right_Grip">
+      <option value="Left_Grip">
+    </datalist>
+
+    <div class="haptic-header">
+      <span>Source Type</span>
+      <span>Parameter / Event / Input</span>
+      <span>Response Mode</span>
+      <span>Hand</span>
+      <span>Min / Thresh</span>
+      <span>Max / Burst ms</span>
+      <span>Intensity %</span>
+      <span>Test</span>
+      <span></span>
+    </div>
+    <div id="hapticsContainer"></div>
+
+    <p class="hint">
+      <strong>Proportional:</strong> Scales vibration from 0% at <em>Min</em> to <em>Intensity %</em> at <em>Max</em> (set Min &gt; Max to rumble stronger as values decrease, e.g. altitude).
+      <strong>On Event / Thresh:</strong> Fires a pulse of <em>Burst ms</em> when an OpenSpace event fires or a parameter crosses <em>Thresh</em>.
+    </p>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="addHapticRow()">+ Add Haptic Mapping</button>
+      <button class="btn" onclick="sendAction({action: 'test_haptic', hand: 'both', duration_ms: 250, intensity: 85})">Test Both Controllers</button>
+    </div>
+  </div>
+
+  <!-- Control Mappings -->
+  <div class="card">
+    <h2>Valve Index Control Mappings (Orbital Inertia Enabled)</h2>
+    <div class="mapping-header">
+      <span>Index Input</span>
+      <span>Trigger Mode</span>
+      <span>OpenSpace 0.22 Lua Command ({VALUE})</span>
+      <span>Min</span>
+      <span>Max</span>
+      <span>Deadzone</span>
+      <span></span>
+    </div>
+    <div id="mappingsContainer"></div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" onclick="addRow()">+ Add Control Mapping</button>
+      <button class="btn btn-success" onclick="saveBindings()">Save All to Bridge (index_bindings.json)</button>
+      <button class="btn" onclick="exportJSON()">Export JSON</button>
+      <button class="btn" onclick="document.getElementById('fileInput').click()">Import JSON</button>
+      <input type="file" id="fileInput" accept=".json" onchange="importJSON(event)">
+    </div>
+  </div>
+
+  <script>
+    const INPUT_SOURCES = [
+      "Right_Trigger", "Left_Trigger",
+      "Right_Grip", "Left_Grip",
+      "Left_Stick_X", "Left_Stick_Y",
+      "Right_Stick_X", "Right_Stick_Y",
+      "Left_Trackpad_X", "Left_Trackpad_Y",
+      "Right_Trackpad_X", "Right_Trackpad_Y",
+      "Left_Button_A", "Left_Button_B",
+      "Right_Button_A", "Right_Button_B",
+      "Left_Grip_Click", "Right_Grip_Click",
+      "Left_Trackpad_Click", "Right_Trackpad_Click",
+      "Left_Trigger_Click", "Right_Trigger_Click"
+    ];
+
+    let ws = null;
+    let initialLoaded = false;
+
+    function setBadge(id, ok, text) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.classList.toggle("connected", Boolean(ok));
+    }
+
+    function syncWalkScale(val) {
+      const num = Math.max(0, parseFloat(val) || 0);
+      document.getElementById("walkScaleLabel").textContent = num.toFixed(1);
+      document.getElementById("walkScaleNum").value = num;
+      document.getElementById("walkScaleSlider").value = Math.min(100, num);
+      pushConfig();
+    }
+
+    function connectBridge() {
+      ws = new WebSocket("ws://127.0.0.1:8081");
+      ws.onopen = () => setBadge("bridge-badge", true, "Bridge Connected");
+      ws.onclose = () => {
+        setBadge("bridge-badge", false, "Bridge Disconnected");
+        setTimeout(connectBridge, 1500);
+      };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type !== "telemetry") return;
+
+        const t = msg.telemetry;
+        setBadge("steamvr-badge", t.steamvr_connected, t.steamvr_connected ? "SteamVR Active" : "SteamVR Offline");
+        setBadge("os-badge", t.openspace_connected, t.openspace_connected ? "OpenSpace Connected" : "OpenSpace Offline");
+
+        const e = t.hmd_euler_deg;
+        document.getElementById("hmdRotReadout").value = `Yaw: ${e.yaw}° | Pitch: ${e.pitch}° | Roll: ${e.roll}°`;
+        if (t.hmd_pos_m) {
+          const p = t.hmd_pos_m;
+          document.getElementById("hmdPosReadout").value = `Room Pos: X ${p.x.toFixed(2)}m | Y ${p.y.toFixed(2)}m | Z ${p.z.toFixed(2)}m`;
+        }
+        if (t.haptic_output) {
+          document.getElementById("hapticMeter").textContent =
+            `Haptics Out — Left: ${t.haptic_output.left}% | Right: ${t.haptic_output.right}%`;
+        }
+
+        document.getElementById("lastSignal").value = `${t.last_signal.source} (${t.last_signal.value})`;
+        if (t.capture_rect) {
+          const r = t.capture_rect;
+          document.getElementById("captureBounds").value = `${r.width}x${r.height} at (${r.left}, ${r.top})`;
+        }
+
+        if (!initialLoaded && msg.config) {
+          initialLoaded = true;
+          renderConfig(msg.config);
+        } else if (msg.config && document.getElementById("flightMode").value !== msg.config.flight_mode) {
+          document.getElementById("flightMode").value = msg.config.flight_mode;
+        }
+      };
+    }
+
+    function sendAction(payload) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(payload));
+      }
+    }
+
+    function renderConfig(cfg) {
+      document.getElementById("flightMode").value = cfg.flight_mode || "body";
+      const wsVal = cfg.walk_scale ?? 1.0;
+      document.getElementById("walkScaleLabel").textContent = Number(wsVal).toFixed(1);
+      document.getElementById("walkScaleNum").value = wsVal;
+      document.getElementById("walkScaleSlider").value = Math.min(100, wsVal);
+
+      document.getElementById("invYaw").checked = Boolean(cfg.invert_hmd?.yaw);
+      document.getElementById("invPitch").checked = Boolean(cfg.invert_hmd?.pitch);
+      document.getElementById("invRoll").checked = Boolean(cfg.invert_hmd?.roll);
+
+      const hapticsContainer = document.getElementById("hapticsContainer");
+      hapticsContainer.innerHTML = "";
+      (cfg.haptics || []).forEach(h => addHapticRow(h));
+
+      const container = document.getElementById("mappingsContainer");
+      container.innerHTML = "";
+      (cfg.mappings || []).forEach(m => addRow(m));
+    }
+
+    function addHapticRow(data = null) {
+      const container = document.getElementById("hapticsContainer");
+      const row = document.createElement("div");
+      row.className = "haptic-row";
+
+      const srcType = data?.source_type || "lua_expr";
+      const mode = data?.mode || "proportional";
+      const hand = data?.hand || "both";
+      const srcVal = (data?.source || "openspace.navigation.distanceToFocusBoundingSphere()").replace(/"/g, "&quot;");
+
+      row.innerHTML = `
+        <select class="h-type" onchange="pushConfig()">
+          <option value="lua_expr" ${srcType === "lua_expr" ? "selected" : ""}>Lua Expression</option>
+          <option value="property" ${srcType === "property" ? "selected" : ""}>OpenSpace Property</option>
+          <option value="event" ${srcType === "event" ? "selected" : ""}>OpenSpace Event</option>
+          <option value="input" ${srcType === "input" ? "selected" : ""}>Controller Input</option>
+        </select>
+        <input type="text" class="h-src" list="hapticSuggestions" value="${srcVal}" onchange="pushConfig()">
+        <select class="h-mode" onchange="pushConfig()">
+          <option value="proportional" ${mode === "proportional" ? "selected" : ""}>Proportional (Rumble)</option>
+          <option value="event_pulse" ${mode === "event_pulse" ? "selected" : ""}>On Event / Thresh (Pulse)</option>
+        </select>
+        <select class="h-hand" onchange="pushConfig()">
+          <option value="both" ${hand === "both" ? "selected" : ""}>Both</option>
+          <option value="left" ${hand === "left" ? "selected" : ""}>Left</option>
+          <option value="right" ${hand === "right" ? "selected" : ""}>Right</option>
+        </select>
+        <input type="number" class="h-min" step="any" value="${data?.min ?? 0.0}" onchange="pushConfig()">
+        <input type="number" class="h-max" step="any" value="${data?.max ?? 1.0}" onchange="pushConfig()">
+        <input type="number" class="h-int" step="1" min="0" max="100" value="${data?.intensity ?? 50}" onchange="pushConfig()">
+        <button type="button" class="btn btn-test" title="Test Haptic Pulse" onclick="testHapticRow(this)">&#9889;</button>
+        <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); pushConfig();">X</button>
+      `;
+      container.appendChild(row);
+    }
+
+    function testHapticRow(btn) {
+      const row = btn.parentElement;
+      const hand = row.querySelector(".h-hand").value;
+      const mode = row.querySelector(".h-mode").value;
+      const maxVal = parseFloat(row.querySelector(".h-max").value) || 200;
+      const intensity = parseFloat(row.querySelector(".h-int").value) || 60;
+      const durMs = mode === "event_pulse" && maxVal > 10 ? maxVal : 220;
+      sendAction({ action: "test_haptic", hand, duration_ms: durMs, intensity });
+    }
+
+    function addRow(data = null) {
+      const container = document.getElementById("mappingsContainer");
+      const row = document.createElement("div");
+      row.className = "mapping-row";
+
+      const opts = INPUT_SOURCES.map(s =>
+        `<option value="${s}" ${data && data.source === s ? "selected" : ""}>${s}</option>`
+      ).join("");
+
+      const mode = data?.mode || "continuous";
+      row.innerHTML = `
+        <select class="m-src" onchange="pushConfig()">${opts}</select>
+        <select class="m-mode" onchange="pushConfig()">
+          <option value="continuous" ${mode === "continuous" ? "selected" : ""}>Continuous</option>
+          <option value="on_press" ${mode === "on_press" ? "selected" : ""}>On Press</option>
+          <option value="step_repeat" ${mode === "step_repeat" ? "selected" : ""}>Step Repeat</option>
+        </select>
+        <input type="text" class="m-lua" value="${(data?.lua || "openspace.navigation.addTruckMovement({VALUE});").replace(/"/g, "&quot;")}" onchange="pushConfig()">
+        <input type="number" class="m-min" step="0.1" value="${data?.min ?? 0.0}" onchange="pushConfig()">
+        <input type="number" class="m-max" step="0.1" value="${data?.max ?? 1.0}" onchange="pushConfig()">
+        <input type="number" class="m-dz" step="0.01" value="${data?.deadzone ?? 0.08}" onchange="pushConfig()">
+        <button type="button" class="btn btn-danger" onclick="this.parentElement.remove(); pushConfig();">X</button>
+      `;
+      container.appendChild(row);
+    }
+
+    function collectConfig() {
+      const hRows = Array.from(document.querySelectorAll(".haptic-row"));
+      const haptics = hRows.map((r, i) => ({
+        id: `h_${i}`,
+        source_type: r.querySelector(".h-type").value,
+        source: r.querySelector(".h-src").value,
+        mode: r.querySelector(".h-mode").value,
+        hand: r.querySelector(".h-hand").value,
+        min: parseFloat(r.querySelector(".h-min").value) || 0,
+        max: parseFloat(r.querySelector(".h-max").value) || 0,
+        intensity: parseFloat(r.querySelector(".h-int").value) || 0
+      }));
+
+      const rows = Array.from(document.querySelectorAll(".mapping-row"));
+      const mappings = rows.map((r, i) => ({
+        id: `m_${i}`,
+        source: r.querySelector(".m-src").value,
+        mode: r.querySelector(".m-mode").value,
+        lua: r.querySelector(".m-lua").value,
+        min: parseFloat(r.querySelector(".m-min").value) || 0,
+        max: parseFloat(r.querySelector(".m-max").value) || 0,
+        deadzone: parseFloat(r.querySelector(".m-dz").value) || 0
+      }));
+
+      return {
+        flight_mode: document.getElementById("flightMode").value,
+        walk_scale: parseFloat(document.getElementById("walkScaleNum").value) || 0,
+        invert_hmd: {
+          yaw: document.getElementById("invYaw").checked,
+          pitch: document.getElementById("invPitch").checked,
+          roll: document.getElementById("invRoll").checked
+        },
+        haptics,
+        mappings
+      };
+    }
+
+    function pushConfig() {
+      sendAction({ action: "update_config", config: collectConfig() });
+    }
+
+    function saveBindings() {
+      pushConfig();
+      sendAction({ action: "save_config" });
+    }
+
+    function exportJSON() {
+      const blob = new Blob([JSON.stringify(collectConfig(), null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "openspace-index-bindings.json";
+      a.click();
+    }
+
+    function importJSON(ev) {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const parsed = JSON.parse(e.target.result);
+        renderConfig(parsed);
+        pushConfig();
+      };
+      reader.readAsText(file);
+    }
+
+    window.addEventListener("DOMContentLoaded", connectBridge);
+  </script>
+</body>
+</html>
