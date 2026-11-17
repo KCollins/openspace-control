@@ -2,10 +2,11 @@ Install dependencies: `pip install openvr websockets mss numpy glfw PyOpenGL`
 
 ## How to Launch & Test
 
+0) Move valveindex_vr.json to your config (or user/config) folder.
+
 1) Start SteamVR with your Valve Index connected (leave SteamVR in normal Direct Mode).
 
 2) Launch OpenSpace 0.22 using valveindex_vr.json as your SGCT configuration.
-Important: Keep the OpenSpaceVR window un-minimized on your desktop (you can click your GUI window to bring the menus in front of it—desktop capture still reads the full OpenSpaceVR window behind it).
 
 3) Run the Python bridge: `python index_openspace_bridge.py`
 

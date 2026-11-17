@@ -5,7 +5,6 @@ import functools
 import http.server
 import json
 import math
-import os
 import queue
 import socketserver
 import sys
@@ -14,11 +13,25 @@ import time
 from pathlib import Path
 
 import glfw
-import mss
 import numpy as np
 import openvr
 from OpenGL import GL
 import websockets
+
+try:
+    from openspace import Api as OpenSpaceApi
+except ImportError:
+    OpenSpaceApi = None
+
+try:
+    from windows_capture import WindowsCapture, Frame, InternalCaptureControl
+except ImportError:
+    WindowsCapture = None
+
+try:
+    import mss
+except ImportError:
+    mss = None
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -31,7 +44,11 @@ DEFAULT_CONFIG = {
         "pitch": 1.0,
         "roll": 0.85,
     },
-    "capture_override": None,  # Optional {"left": 100, "top": 100, "width": 2880, "height": 1600}
+    "invert_hmd": {
+        "yaw": False,
+        "pitch": False,
+        "roll": False,
+    },
     "mappings": [
         # --- Google Earth VR Inspired Flight & Orbit ---
         {
@@ -219,44 +236,105 @@ def quat_to_euler_rad(q):
     return pitch, yaw, roll
 
 
-# --- Cross-Platform Stereo Window Locator ---
-def find_window_rect(title="OpenSpaceVR", fallback=None):
-    """Locate the client screen bounds of the OpenSpaceVR window on Windows or Linux."""
-    if fallback:
-        return dict(fallback)
+def compute_eye_texture_bounds(vr_sys, eye, rendered_hfov_deg=103.0, rendered_vfov_deg=104.0):
+    """
+    Align symmetric SGCT planar render (centered at 0,0) with OpenVR's asymmetric
+    canted eye frustum so the optical center of each eye matches the Index lenses.
+    """
+    left_tan, right_tan, top_tan, bottom_tan = vr_sys.getProjectionRaw(eye)
+    # Note: In OpenVR getProjectionRaw, top_tan is negative (OpenGL Y-down) and bottom_tan is positive
+    h_tan_half = math.tan(math.radians(rendered_hfov_deg * 0.5))
+    v_tan_half = math.tan(math.radians(rendered_vfov_deg * 0.5))
 
-    if sys.platform.startswith("win"):
-        try:
-            user32 = ctypes.windll.user32
+    u_min = 0.5 + (left_tan / (2.0 * h_tan_half))
+    u_max = 0.5 + (right_tan / (2.0 * h_tan_half))
+    # Flip V for top-down captured texture -> OpenGL bottom-up
+    v_top = 0.5 - (top_tan / (2.0 * v_tan_half))
+    v_bot = 0.5 - (bottom_tan / (2.0 * v_tan_half))
 
-            class RECT(ctypes.Structure):
-                _fields_ = [
-                    ("left", ctypes.c_long),
-                    ("top", ctypes.c_long),
-                    ("right", ctypes.c_long),
-                    ("bottom", ctypes.c_long),
-                ]
+    u_min = max(0.0, min(1.0, u_min))
+    u_max = max(0.0, min(1.0, u_max))
+    v_top = max(0.0, min(1.0, v_top))
+    v_bot = max(0.0, min(1.0, v_bot))
+    return openvr.VRTextureBounds_t(u_min, v_top, u_max, v_bot)
 
-            class POINT(ctypes.Structure):
-                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
-            hwnd = user32.FindWindowW(None, title)
-            if hwnd and not user32.IsIconic(hwnd):
-                rect = RECT()
-                if user32.GetClientRect(hwnd, ctypes.byref(rect)):
-                    pt = POINT(0, 0)
-                    user32.ClientToScreen(hwnd, ctypes.byref(pt))
-                    w = rect.right - rect.left
-                    h = rect.bottom - rect.top
-                    if w > 100 and h > 100:
-                        return {"left": int(pt.x), "top": int(pt.y), "width": int(w), "height": int(h)}
-        except Exception:
-            pass
-    elif sys.platform.startswith("linux"):
+# --- Per-Window Stereo Frame Grabber (Windows Graphics Capture + Linux Fallback) ---
+class StereoWindowGrabber:
+    def __init__(self, window_title: str):
+        self.window_title = window_title
+        self._lock = threading.Lock()
+        self._latest_frame = None
+        self._active = False
+        self._stop_event = threading.Event()
+        self._control = None
+
+    def start(self):
+        if sys.platform.startswith("win") and WindowsCapture is not None:
+            threading.Thread(target=self._wgc_supervisor, daemon=True).start()
+            print(f"[Capture] Windows Graphics Capture enabled for window '{self.window_title}'.")
+        elif mss is not None:
+            threading.Thread(target=self._mss_fallback_loop, daemon=True).start()
+            print(f"[Capture] Using mss window-region capture for '{self.window_title}'.")
+        else:
+            print("[Capture] Warning: Neither windows-capture nor mss is available.")
+
+    def _wgc_supervisor(self):
+        while not self._stop_event.is_set():
+            if self._active:
+                time.sleep(0.5)
+                continue
+
+            try:
+                capture = WindowsCapture(
+                    cursor_capture=False,
+                    draw_border=False,
+                    monitor_index=None,
+                    window_name=self.window_title,
+                )
+
+                @capture.event
+                def on_frame_arrived(frame: Frame, capture_control: InternalCaptureControl):
+                    if self._stop_event.is_set():
+                        capture_control.stop()
+                        return
+                    buf = frame.frame_buffer
+                    if buf is not None and buf.size > 0:
+                        with self._lock:
+                            self._latest_frame = buf.copy()
+
+                @capture.event
+                def on_closed():
+                    self._active = False
+                    print(f"[Capture] Window '{self.window_title}' closed; waiting to reattach...")
+
+                self._control = capture.start_free_threaded()
+                self._active = True
+                print(f"[Capture] Locked onto '{self.window_title}' window buffer.")
+            except Exception:
+                self._active = False
+                time.sleep(1.0)
+
+    def _mss_fallback_loop(self):
+        with mss.mss() as sct:
+            while not self._stop_event.is_set():
+                rect = self._find_linux_rect()
+                if rect:
+                    try:
+                        grab = sct.grab(rect)
+                        arr = np.frombuffer(grab.bgra, dtype=np.uint8).reshape((grab.height, grab.width, 4))
+                        with self._lock:
+                            self._latest_frame = arr
+                        self._active = True
+                    except Exception:
+                        self._active = False
+                time.sleep(1.0 / 90.0)
+
+    def _find_linux_rect(self):
         try:
             import subprocess
 
-            out = subprocess.check_output(["xwininfo", "-name", title], stderr=subprocess.DEVNULL, text=True)
+            out = subprocess.check_output(["xwininfo", "-name", self.window_title], stderr=subprocess.DEVNULL, text=True)
             vals = {}
             for line in out.splitlines():
                 line = line.strip()
@@ -272,8 +350,21 @@ def find_window_rect(title="OpenSpaceVR", fallback=None):
                 return vals
         except Exception:
             pass
+        return None
 
-    return {"left": 100, "top": 100, "width": 2880, "height": 1600}
+    def get_frame(self):
+        with self._lock:
+            frame = self._latest_frame
+            self._latest_frame = None
+            return frame
+
+    def stop(self):
+        self._stop_event.set()
+        if self._control is not None:
+            try:
+                self._control.stop()
+            except Exception:
+                pass
 
 
 # --- Bridge State ---
@@ -347,7 +438,6 @@ def read_controller_inputs(vr_sys):
         if not ok:
             continue
 
-        # Axes (OpenVR Legacy / Index mapping)
         inputs[f"{side}_Stick_X"] = float(state.rAxis[0].x)
         inputs[f"{side}_Stick_Y"] = float(state.rAxis[0].y)
         inputs[f"{side}_Trigger"] = float(state.rAxis[1].x)
@@ -355,7 +445,6 @@ def read_controller_inputs(vr_sys):
         inputs[f"{side}_Trackpad_X"] = float(state.rAxis[3].x)
         inputs[f"{side}_Trackpad_Y"] = float(state.rAxis[3].y)
 
-        # Digital Buttons
         pressed = state.ulButtonPressed
         inputs[f"{side}_Button_A"] = 1.0 if (pressed & (1 << openvr.k_EButton_A)) else 0.0
         inputs[f"{side}_Button_B"] = 1.0 if (pressed & (1 << openvr.k_EButton_ApplicationMenu)) else 0.0
@@ -384,11 +473,17 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
         vr_sys = openvr.init(openvr.VRApplication_Scene)
         compositor = openvr.VRCompositor()
         bridge.steamvr_connected = True
+        bridge.telemetry["steamvr_connected"] = True
         print("[VR] Connected to SteamVR runtime (Valve Index ready).")
     except Exception as exc:
         print(f"[VR] Could not initialize SteamVR: {exc}")
         glfw.terminate()
         return
+
+    grabber = None
+    if not disable_compositor:
+        grabber = StereoWindowGrabber(window_title)
+        grabber.start()
 
     left_tex, right_tex = GL.glGenTextures(2)
     for tex in (left_tex, right_tex):
@@ -402,8 +497,10 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
     poses_t = openvr.TrackedDevicePose_t * openvr.k_unMaxTrackedDeviceCount
     poses = poses_t()
 
-    # Flip V coordinates so top-down screen buffer renders right-side up in OpenGL
-    bounds = openvr.VRTextureBounds_t(0.0, 1.0, 1.0, 0.0)
+    # Align SGCT's symmetric 103x104 deg planar render with the Index's asymmetric eye frustums
+    bounds_left = compute_eye_texture_bounds(vr_sys, openvr.Eye_Left, 103.0, 104.0)
+    bounds_right = compute_eye_texture_bounds(vr_sys, openvr.Eye_Right, 103.0, 104.0)
+
     tex_left_desc = openvr.Texture_t()
     tex_left_desc.handle = ctypes.cast(int(left_tex), ctypes.c_void_p)
     tex_left_desc.eType = openvr.TextureType_OpenGL
@@ -414,199 +511,216 @@ def vr_loop(bridge: BridgeState, window_title: str, disable_compositor: bool):
     tex_right_desc.eType = openvr.TextureType_OpenGL
     tex_right_desc.eColorSpace = openvr.ColorSpace_Gamma
 
-    last_rect_check = 0.0
-    capture_rect = {"left": 100, "top": 100, "width": 2880, "height": 1600}
+    try:
+        while not glfw.window_should_close(gl_window):
+            now = time.perf_counter()
+            compositor.waitGetPoses(poses, None)
 
-    with mss.mss() as sct:
-        try:
-            while not glfw.window_should_close(gl_window):
-                now = time.perf_counter()
-                compositor.waitGetPoses(poses, None)
+            # 1. Upload latest per-window stereo frame and submit to SteamVR Compositor
+            if grabber is not None:
+                frame = grabber.get_frame()
+                if frame is not None and frame.shape[1] >= 200 and frame.shape[0] >= 100:
+                    h, w = frame.shape[:2]
+                    eye_w = w // 2
+                    bridge.telemetry["capture_rect"] = {"left": 0, "top": 0, "width": int(w), "height": int(h)}
 
-                # Periodically refresh OpenSpaceVR window bounds
-                if now - last_rect_check > 1.0:
-                    with bridge.lock:
-                        override = bridge.config.get("capture_override")
-                    capture_rect = find_window_rect(window_title, override)
-                    bridge.telemetry["capture_rect"] = capture_rect
-                    last_rect_check = now
+                    left_eye = np.ascontiguousarray(frame[:, :eye_w, :])
+                    right_eye = np.ascontiguousarray(frame[:, eye_w : eye_w * 2, :])
 
-                # 1. Capture side-by-side stereo window and submit to SteamVR Compositor
-                if not disable_compositor and capture_rect["width"] >= 200 and capture_rect["height"] >= 100:
-                    try:
-                        grab = sct.grab(capture_rect)
-                        frame = np.frombuffer(grab.bgra, dtype=np.uint8).reshape((grab.height, grab.width, 4))
-                        eye_w = grab.width // 2
-                        eye_h = grab.height
-
-                        left_eye = np.ascontiguousarray(frame[:, :eye_w, :])
-                        right_eye = np.ascontiguousarray(frame[:, eye_w : eye_w * 2, :])
-
-                        if tex_dims[0] != eye_w or tex_dims[1] != eye_h:
-                            GL.glBindTexture(GL.GL_TEXTURE_2D, left_tex)
-                            GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, eye_w, eye_h, 0, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, left_eye)
-                            GL.glBindTexture(GL.GL_TEXTURE_2D, right_tex)
-                            GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, eye_w, eye_h, 0, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, right_eye)
-                            tex_dims = [eye_w, eye_h]
-                        else:
-                            GL.glBindTexture(GL.GL_TEXTURE_2D, left_tex)
-                            GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, eye_w, eye_h, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, left_eye)
-                            GL.glBindTexture(GL.GL_TEXTURE_2D, right_tex)
-                            GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, eye_w, eye_h, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, right_eye)
-
-                        compositor.submit(openvr.Eye_Left, tex_left_desc, bounds)
-                        compositor.submit(openvr.Eye_Right, tex_right_desc, bounds)
-                    except Exception:
-                        pass
-
-                lua_cmds = []
-
-                # 2. Process HMD 6DoF Orientation
-                hmd_pose = poses[openvr.k_unTrackedDeviceIndex_Hmd]
-                if hmd_pose.bPoseIsValid:
-                    q_curr = matrix34_to_quat(hmd_pose.mDeviceToAbsoluteTracking)
-                    pitch_abs, yaw_abs, roll_abs = quat_to_euler_rad(q_curr)
-                    bridge.telemetry["hmd_euler_deg"] = {
-                        "yaw": round(math.degrees(yaw_abs), 1),
-                        "pitch": round(math.degrees(pitch_abs), 1),
-                        "roll": round(math.degrees(roll_abs), 1),
-                    }
-
-                    with bridge.lock:
-                        head_mode = bridge.config["head_mode"]
-                        sens = dict(bridge.config["hmd_sensitivity"])
-                        recenter = bridge.recenter_requested
-                        bridge.recenter_requested = False
-
-                    if recenter or bridge.q_ref is None:
-                        bridge.q_ref = q_curr
-                        bridge.q_prev = q_curr
-                        bridge.last_seated_euler = (0.0, 0.0, 0.0)
-
-                    # Gain tuned for OpenSpace 0.22 local impulse scale
-                    gain = 32.0
-                    if head_mode == "hybrid":
-                        q_delta = quat_mul(quat_inv(bridge.q_prev), q_curr)
-                        dp, dy, dr = quat_to_euler_rad(q_delta)
-                        bridge.q_prev = q_curr
+                    if tex_dims[0] != eye_w or tex_dims[1] != h:
+                        GL.glBindTexture(GL.GL_TEXTURE_2D, left_tex)
+                        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, eye_w, h, 0, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, left_eye)
+                        GL.glBindTexture(GL.GL_TEXTURE_2D, right_tex)
+                        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, eye_w, h, 0, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, right_eye)
+                        tex_dims = [eye_w, h]
                     else:
-                        # 1:1 Seated Absolute offset from calibrated reference
-                        q_offset = quat_mul(quat_inv(bridge.q_ref), q_curr)
-                        sp, sy, sr = quat_to_euler_rad(q_offset)
-                        lp, ly, lr = bridge.last_seated_euler
-                        dp, dy, dr = (sp - lp), (sy - ly), (sr - lr)
-                        bridge.last_seated_euler = (sp, sy, sr)
-                        bridge.q_prev = q_curr
+                        GL.glBindTexture(GL.GL_TEXTURE_2D, left_tex)
+                        GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, eye_w, h, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, left_eye)
+                        GL.glBindTexture(GL.GL_TEXTURE_2D, right_tex)
+                        GL.glTexSubImage2D(GL.GL_TEXTURE_2D, 0, 0, 0, eye_w, h, GL.GL_BGRA, GL.GL_UNSIGNED_BYTE, right_eye)
 
-                    # Note: OpenSpace addLocalRotation positive horizontal rotates LEFT, so negate dy
-                    yaw_cmd = -dy * gain * sens["yaw"]
-                    pitch_cmd = dp * gain * sens["pitch"]
-                    roll_cmd = -dr * gain * sens["roll"]
+                if tex_dims[0] > 0:
+                    compositor.submit(openvr.Eye_Left, tex_left_desc, bounds_left)
+                    compositor.submit(openvr.Eye_Right, tex_right_desc, bounds_right)
 
-                    if abs(yaw_cmd) > 1e-4 or abs(pitch_cmd) > 1e-4:
-                        lua_cmds.append(f"openspace.navigation.addLocalRotation({yaw_cmd:.5f}, {pitch_cmd:.5f});")
-                    if abs(roll_cmd) > 1e-4:
-                        lua_cmds.append(f"openspace.navigation.addLocalRoll({roll_cmd:.5f});")
+            lua_cmds = []
 
-                # 3. Process Valve Index Controllers
-                ctrl_inputs = read_controller_inputs(vr_sys)
+            # 2. Process HMD 6DoF Orientation
+            hmd_pose = poses[openvr.k_unTrackedDeviceIndex_Hmd]
+            if hmd_pose.bPoseIsValid:
+                q_curr = matrix34_to_quat(hmd_pose.mDeviceToAbsoluteTracking)
+                pitch_abs, yaw_abs, roll_abs = quat_to_euler_rad(q_curr)
+                bridge.telemetry["hmd_euler_deg"] = {
+                    "yaw": round(math.degrees(yaw_abs), 1),
+                    "pitch": round(math.degrees(pitch_abs), 1),
+                    "roll": round(math.degrees(roll_abs), 1),
+                }
+
                 with bridge.lock:
-                    mappings = list(bridge.config["mappings"])
+                    head_mode = bridge.config["head_mode"]
+                    sens = dict(bridge.config["hmd_sensitivity"])
+                    inv = dict(bridge.config.get("invert_hmd", {}))
+                    recenter = bridge.recenter_requested
+                    bridge.recenter_requested = False
 
-                for m in mappings:
-                    src = m.get("source", "")
-                    if src not in ctrl_inputs:
+                if recenter or bridge.q_ref is None:
+                    bridge.q_ref = q_curr
+                    bridge.q_prev = q_curr
+                    bridge.last_seated_euler = (0.0, 0.0, 0.0)
+
+                gain = 18.0
+                if head_mode == "hybrid":
+                    q_delta = quat_mul(quat_inv(bridge.q_prev), q_curr)
+                    dp, dy, dr = quat_to_euler_rad(q_delta)
+                    bridge.q_prev = q_curr
+                else:
+                    q_offset = quat_mul(quat_inv(bridge.q_ref), q_curr)
+                    sp, sy, sr = quat_to_euler_rad(q_offset)
+                    lp, ly, lr = bridge.last_seated_euler
+                    dp, dy, dr = (sp - lp), (sy - ly), (sr - lr)
+                    bridge.last_seated_euler = (sp, sy, sr)
+                    bridge.q_prev = q_curr
+
+                s_yaw = -1.0 if inv.get("yaw", False) else 1.0
+                s_pitch = -1.0 if inv.get("pitch", False) else 1.0
+                s_roll = -1.0 if inv.get("roll", False) else 1.0
+
+                # Positive horizontal in addLocalRotation turns camera RIGHT; turning head left gives +dy
+                yaw_cmd = dy * gain * sens["yaw"] * s_yaw
+                pitch_cmd = dp * gain * sens["pitch"] * s_pitch
+                roll_cmd = -dr * gain * sens["roll"] * s_roll
+
+                if abs(yaw_cmd) > 1e-4 or abs(pitch_cmd) > 1e-4:
+                    lua_cmds.append(f"openspace.navigation.addLocalRotation({yaw_cmd:.5f}, {pitch_cmd:.5f});")
+                if abs(roll_cmd) > 1e-4:
+                    lua_cmds.append(f"openspace.navigation.addLocalRoll({roll_cmd:.5f});")
+
+            # 3. Process Valve Index Controllers
+            ctrl_inputs = read_controller_inputs(vr_sys)
+            with bridge.lock:
+                mappings = list(bridge.config["mappings"])
+
+            for m in mappings:
+                src = m.get("source", "")
+                if src not in ctrl_inputs:
+                    continue
+
+                raw = ctrl_inputs[src]
+                dz = float(m.get("deadzone", 0.0))
+                mode = m.get("mode", "continuous")
+                min_v = float(m.get("min", 0.0))
+                max_v = float(m.get("max", 1.0))
+                lua_tpl = m.get("lua", "")
+                key = m.get("id", src)
+
+                if abs(raw) > max(0.2, dz):
+                    bridge.telemetry["last_signal"] = {"source": src, "value": round(raw, 3)}
+
+                if mode == "on_press":
+                    is_down = raw >= 0.5
+                    was_down = bridge.prev_buttons.get(key, False)
+                    bridge.prev_buttons[key] = is_down
+                    if is_down and not was_down:
+                        if lua_tpl == "__BRIDGE_RECENTER__":
+                            with bridge.lock:
+                                bridge.recenter_requested = True
+                        elif lua_tpl == "__BRIDGE_TOGGLE_HEAD_MODE__":
+                            with bridge.lock:
+                                bridge.config["head_mode"] = (
+                                    "seated" if bridge.config["head_mode"] == "hybrid" else "hybrid"
+                                )
+                                bridge.recenter_requested = True
+                                bridge.telemetry["head_mode"] = bridge.config["head_mode"]
+                        else:
+                            lua_cmds.append(lua_tpl.replace("{VALUE}", f"{max_v:.4f}"))
+
+                elif mode == "step_repeat":
+                    if abs(raw) >= dz:
+                        last_t = bridge.step_timers.get(key, 0.0)
+                        if now - last_t >= 0.30:
+                            bridge.step_timers[key] = now
+                            val = max_v if raw > 0 else min_v
+                            lua_cmds.append(lua_tpl.replace("{VALUE}", f"{val:.4f}"))
+                    else:
+                        bridge.step_timers[key] = 0.0
+
+                else:  # continuous
+                    if abs(raw) < dz:
                         continue
+                    sign = 1.0 if raw >= 0 else -1.0
+                    norm = (abs(raw) - dz) / max(1e-5, (1.0 - dz))
+                    if "Stick" in src or "Trackpad" in src:
+                        signed_norm = sign * norm
+                        scaled = ((signed_norm + 1.0) * 0.5) * (max_v - min_v) + min_v
+                    else:
+                        scaled = min_v + norm * (max_v - min_v)
 
-                    raw = ctrl_inputs[src]
-                    dz = float(m.get("deadzone", 0.0))
-                    mode = m.get("mode", "continuous")
-                    min_v = float(m.get("min", 0.0))
-                    max_v = float(m.get("max", 1.0))
-                    lua_tpl = m.get("lua", "")
-                    key = m.get("id", src)
+                    if abs(scaled) > 1e-4:
+                        lua_cmds.append(lua_tpl.replace("{VALUE}", f"{scaled:.5f}"))
 
-                    # Detect most active input for live UI monitor
-                    if abs(raw) > max(0.2, dz):
-                        bridge.telemetry["last_signal"] = {"source": src, "value": round(raw, 3)}
+            if lua_cmds:
+                bridge.enqueue_lua(" ".join(lua_cmds))
 
-                    if mode == "on_press":
-                        is_down = raw >= 0.5
-                        was_down = bridge.prev_buttons.get(key, False)
-                        bridge.prev_buttons[key] = is_down
-                        if is_down and not was_down:
-                            if lua_tpl == "__BRIDGE_RECENTER__":
-                                with bridge.lock:
-                                    bridge.recenter_requested = True
-                            elif lua_tpl == "__BRIDGE_TOGGLE_HEAD_MODE__":
-                                with bridge.lock:
-                                    bridge.config["head_mode"] = (
-                                        "seated" if bridge.config["head_mode"] == "hybrid" else "hybrid"
-                                    )
-                                    bridge.recenter_requested = True
-                                    bridge.telemetry["head_mode"] = bridge.config["head_mode"]
-                            else:
-                                lua_cmds.append(lua_tpl.replace("{VALUE}", f"{max_v:.4f}"))
-
-                    elif mode == "step_repeat":
-                        if abs(raw) >= dz:
-                            last_t = bridge.step_timers.get(key, 0.0)
-                            if now - last_t >= 0.30:
-                                bridge.step_timers[key] = now
-                                val = max_v if raw > 0 else min_v
-                                lua_cmds.append(lua_tpl.replace("{VALUE}", f"{val:.4f}"))
-                        else:
-                            bridge.step_timers[key] = 0.0
-
-                    else:  # continuous
-                        if abs(raw) < dz:
-                            continue
-                        # Renormalize past deadzone
-                        sign = 1.0 if raw >= 0 else -1.0
-                        norm = (abs(raw) - dz) / max(1e-5, (1.0 - dz))
-                        if "Stick" in src or "Trackpad" in src:
-                            # Signed -1..1 -> min..max
-                            signed_norm = sign * norm
-                            scaled = ((signed_norm + 1.0) * 0.5) * (max_v - min_v) + min_v
-                        else:
-                            # Unipolar 0..1 (Trigger/Grip) -> min..max
-                            scaled = min_v + norm * (max_v - min_v)
-
-                        if abs(scaled) > 1e-4:
-                            lua_cmds.append(lua_tpl.replace("{VALUE}", f"{scaled:.5f}"))
-
-                if lua_cmds:
-                    bridge.enqueue_lua(" ".join(lua_cmds))
-
-        finally:
-            openvr.shutdown()
-            glfw.terminate()
+    finally:
+        if grabber is not None:
+            grabber.stop()
+        openvr.shutdown()
+        glfw.terminate()
 
 
-# --- Async OpenSpace WebSocket Sender + Local UI WebSocket Server ---
-async def openspace_sender_loop(bridge: BridgeState, host: str, port: int):
-    uri = f"ws://{host}:{port}/"
+# --- Official OpenSpace 0.22 Async Socket API Loop ---
+async def openspace_api_loop(bridge: BridgeState, host: str, port: int):
+    """Connect to OpenSpace 0.22 via official async openspace-api (default TCP port 4681)."""
+    if OpenSpaceApi is None:
+        print("[OpenSpace] Error: 'openspace-api' package not installed. Run: pip install openspace-api")
+        return
+
     while True:
-        try:
-            async with websockets.connect(uri, ping_interval=None) as ws:
-                bridge.openspace_connected = True
-                bridge.telemetry["openspace_connected"] = True
-                print(f"[OpenSpace] Connected to {uri}")
-                while True:
-                    try:
-                        script = bridge.lua_queue.get_nowait()
-                        payload = json.dumps({"topic": 0, "type": "luascript", "payload": {"script": script}})
-                        await ws.send(payload)
-                    except queue.Empty:
-                        await asyncio.sleep(0.004)
-        except Exception:
+        disconnected_event = asyncio.Event()
+        api = OpenSpaceApi(host, port)
+
+        async def on_connect():
+            bridge.openspace_connected = True
+            bridge.telemetry["openspace_connected"] = True
+            print(f"[OpenSpace] Connected via openspace-api (v1.0.0 handshake complete) to {host}:{port}")
+            # Disable rotational inertia so 1:1 head tracking doesn't drift or lag
+            try:
+                await api.executeLuaScript(
+                    "openspace.setPropertyValueSingle('NavigationHandler.OrbitalNavigator.Friction.RotationalFriction', false);",
+                    getReturnValue=False,
+                )
+            except Exception:
+                pass
+
+        def on_disconnect():
             if bridge.openspace_connected:
                 print("[OpenSpace] Disconnected. Reconnecting...")
             bridge.openspace_connected = False
             bridge.telemetry["openspace_connected"] = False
+            disconnected_event.set()
+
+        api.onConnect(on_connect)
+        api.onDisconnect(on_disconnect)
+
+        try:
+            await api.connect()
+            while not disconnected_event.is_set():
+                try:
+                    script = bridge.lua_queue.get_nowait()
+                    await api.executeLuaScript(script, getReturnValue=False, shouldBeSynchronized=True)
+                except queue.Empty:
+                    await asyncio.sleep(0.004)
+        except Exception:
+            bridge.openspace_connected = False
+            bridge.telemetry["openspace_connected"] = False
+            try:
+                api.disconnect()
+            except Exception:
+                pass
             await asyncio.sleep(1.5)
 
 
+# --- Local UI WebSocket & HTTP Server ---
 async def ui_ws_handler(websocket, bridge: BridgeState):
     async def sender():
         while True:
@@ -657,12 +771,11 @@ async def main_async(args):
     bridge = BridgeState()
     start_http_server(args.http_port)
 
-    vr_thread = threading.Thread(
+    threading.Thread(
         target=vr_loop,
         args=(bridge, args.window_title, args.no_compositor),
         daemon=True,
-    )
-    vr_thread.start()
+    ).start()
 
     ws_server = await websockets.serve(
         functools.partial(ui_ws_handler, bridge=bridge),
@@ -672,15 +785,15 @@ async def main_async(args):
     print(f"[UI] Bridge WebSocket listening on ws://127.0.0.1:{args.ui_ws_port}")
 
     await asyncio.gather(
-        openspace_sender_loop(bridge, args.os_host, args.os_port),
+        openspace_api_loop(bridge, args.os_host, args.os_port),
         ws_server.wait_closed(),
     )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Valve Index + SteamVR Bridge for OpenSpace 0.22")
-    parser.add_argument("--os-host", default="localhost", help="OpenSpace WebSocket host")
-    parser.add_argument("--os-port", type=int, default=4682, help="OpenSpace WebSocket port")
+    parser.add_argument("--os-host", default="localhost", help="OpenSpace TCP API host")
+    parser.add_argument("--os-port", type=int, default=4681, help="OpenSpace TCP API port (default: 4681)")
     parser.add_argument("--http-port", type=int, default=8080, help="Local HTML mapper HTTP port")
     parser.add_argument("--ui-ws-port", type=int, default=8081, help="Local UI telemetry WebSocket port")
     parser.add_argument("--window-title", default="OpenSpaceVR", help="SGCT stereo window name to capture")

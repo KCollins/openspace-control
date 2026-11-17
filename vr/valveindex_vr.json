@@ -7,13 +7,38 @@
       "port": 20401,
       "windows": [
         {
+          "name": "OpenSpaceVR",
+          "fullscreen": false,
+          "border": false,
+          "draw2d": false,
+          "stereo": "side_by_side",
+          "pos": { "x": 0, "y": 0 },
+          "size": { "x": 2048, "y": 1280 },
+          "viewports": [
+            {
+              "pos": { "x": 0.0, "y": 0.0 },
+              "size": { "x": 1.0, "y": 1.0 },
+              "projection": {
+                "type": "PlanarProjection",
+                "distance": 50.0,
+                "fov": {
+                  "up": 52.0,
+                  "down": 52.0,
+                  "left": 51.5,
+                  "right": 51.5
+                }
+              }
+            }
+          ]
+        },
+        {
           "name": "GUI",
           "tags": [ "GUI" ],
           "fullscreen": false,
-          "draw3d": true,
+          "draw3d": false,
           "stereo": "none",
-          "pos": { "x": 40, "y": 40 },
-          "size": { "x": 1280, "y": 720 },
+          "pos": { "x": 50, "y": 50 },
+          "size": { "x": 1050, "y": 680 },
           "viewports": [
             {
               "pos": { "x": 0.0, "y": 0.0 },
@@ -28,43 +53,21 @@
               }
             }
           ]
-        },
-        {
-          "name": "OpenSpaceVR",
-          "fullscreen": false,
-          "border": false,
-          "draw2d": false,
-          "stereo": "side_by_side",
-          "pos": { "x": 100, "y": 100 },
-          "size": { "x": 2880, "y": 1600 },
-          "viewports": [
-            {
-              "pos": { "x": 0.0, "y": 0.0 },
-              "size": { "x": 1.0, "y": 1.0 },
-              "projection": {
-                "type": "PlanarProjection",
-                "fov": {
-                  "hfov": 105.0,
-                  "vfov": 95.0
-                }
-              }
-            }
-          ]
         }
       ]
     }
   ],
   "users": [
     {
-      "eyeseparation": 0.065,
+      "eyeseparation": 0.064,
       "pos": { "x": 0.0, "y": 0.0, "z": 0.0 }
     }
   ],
   "meta": {
     "author": "OpenSpace VR Bridge",
-    "description": "Desktop GUI window + 2880x1600 side-by-side stereo window without 2D overlays for SteamVR Direct Mode.",
+    "description": "Valve Index stereo config with far convergence plane (50m) to eliminate double vision at infinity.",
     "license": "MIT License",
-    "name": "Valve Index Stereo + GUI",
-    "version": "1.0"
+    "name": "Valve Index Stereo + GUI (v4)",
+    "version": "4.0"
   }
 }
